@@ -4,13 +4,6 @@
   "packages": {
     "node": "22"
   },
-  "steps": {
-    "install": {
-      "commands": [
-        "npm install --include=optional"
-      ]
-    }
-  },
   "deploy": {
     "startCommand": "npm run start"
   }
