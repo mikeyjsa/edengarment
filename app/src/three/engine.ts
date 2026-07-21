@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree, StaticGeometryGenerator } from 'three-mesh-bvh'
 import {
   buildManikin,
   buildStand,
@@ -11,7 +12,17 @@ import {
 } from './atelierScene'
 import type { CardMeasurements, CardView } from '../lib/designCard'
 
-export type Tool = 'pencil' | 'spray' | 'fill' | 'stone' | 'shape' | 'measure' | 'select' | 'eraser' | 'move'
+type BVHGeometry = THREE.BufferGeometry & {
+  boundsTree?: unknown
+  computeBoundsTree: typeof computeBoundsTree
+  disposeBoundsTree: typeof disposeBoundsTree
+}
+
+;(THREE.BufferGeometry.prototype as BVHGeometry).computeBoundsTree = computeBoundsTree
+;(THREE.BufferGeometry.prototype as BVHGeometry).disposeBoundsTree = disposeBoundsTree
+THREE.Mesh.prototype.raycast = acceleratedRaycast
+
+export type Tool = 'pencil' | 'brush' | 'spray' | 'fill' | 'stone' | 'shape' | 'measure' | 'select' | 'eraser' | 'move'
 export type DrawingViewPreset = 'front' | 'back' | 'left' | 'right'
 export interface DrawingPlaneAnchor { position: [number, number, number]; quaternion: [number, number, number, number]; width: number; height: number }
 export function straightenDrawingPlaneAnchor(anchor: DrawingPlaneAnchor): DrawingPlaneAnchor {
@@ -29,7 +40,7 @@ export interface AtelierDesignState {
   heightCm: number
   fabric: { color: string; preset: FabricPreset }
   view: { azimuth: number; polar: number; distance: number }
-  settings?: { snapEnabled: boolean }
+  settings?: { snapEnabled: boolean; outlinesVisible?: boolean }
   items: Array<Record<string, unknown>>
 }
 
@@ -43,8 +54,9 @@ const BASE_HEIGHT_CM = 170 // scale 1.0 represents 170 cm
 
 interface ActiveStroke {
   group: THREE.Group
-  kind: 'pencil' | 'spray'
+  kind: 'pencil' | 'brush' | 'spray'
   points: THREE.Vector3[]
+  normals: THREE.Vector3[]
   lastLocal: THREE.Vector3 | null
   planeRef: THREE.Vector3 | null
   previewMesh: THREE.Mesh | THREE.Line | null
@@ -67,6 +79,8 @@ export class AtelierEngine {
   private manikinGroup: THREE.Group
   private manikinMaterial: THREE.MeshStandardMaterial
   private bodyMeshes: THREE.Object3D[] = []
+  private collisionMeshes: THREE.Mesh[] = []
+  private collisionGenerators: Array<{ generator: StaticGeometryGenerator; mesh: THREE.Mesh }> = []
   private standGroup: THREE.Group
   private referenceModel: THREE.Group | null = null
   private drawingPlanes = new Map<string, { mesh: THREE.Mesh; texture: THREE.Texture; live: boolean; anchor: DrawingPlaneAnchor }>()
@@ -80,15 +94,21 @@ export class AtelierEngine {
   private tool: Tool = 'move'
   private color = '#1f1b16'
   private thickness = 4 // 1..10
+  private brushSizeCm = 8
   private mirror = false
   private snapEnabled = true
+  private outlinesVisible = true
   private autoRotate = false
   private heightCm = BASE_HEIGHT_CM
   private fabricPreset: FabricPreset = 'matte'
+  private materialScale = 1
+  private materialRotation = 0
   private stoneShape: StoneShape = 'diamond'
   private stoneSize = 5
   private stoneCount = 3
   private shapeKind: ShapeKind = 'circle'
+  private shapeWidthCm = 12
+  private shapeHeightCm = 8
   private lastStonePoint: THREE.Vector3 | null = null
 
   // camera orbit state
@@ -154,6 +174,11 @@ export class AtelierEngine {
     this.manikinGroup = parts.group
     this.manikinMaterial = parts.material
     this.bodyMeshes = [parts.mesh, ...parts.breasts, ...parts.limbs]
+    this.bodyMeshes.forEach((object) => {
+      const mesh = object as THREE.Mesh
+      const geometry = mesh.geometry as BVHGeometry | undefined
+      if (geometry && !geometry.boundsTree) geometry.computeBoundsTree()
+    })
     this.manikinGroup.position.y = STAND_TOP
     this.scene.add(this.manikinGroup)
     this.loadReferenceModel()
@@ -163,6 +188,7 @@ export class AtelierEngine {
     this.scene.add(this.strokesGroup)
 
     this.raycaster.params.Points.threshold = 0.06
+    ;(this.raycaster as THREE.Raycaster & { firstHitOnly: boolean }).firstHitOnly = true
 
     // events
     this.boundDown = (e) => this.onPointerDown(e)
@@ -191,7 +217,7 @@ export class AtelierEngine {
       this.dist += (this.desiredDist - this.dist) * 0.18
       this.updateCamera()
       if (
-        this.stroke?.kind === 'pencil' &&
+        (this.stroke?.kind === 'pencil' || this.stroke?.kind === 'brush') &&
         this.stroke.previewDirty &&
         t - this.stroke.lastPreviewAt >= 32
       ) {
@@ -217,12 +243,21 @@ export class AtelierEngine {
   setThickness(v: number) {
     this.thickness = THREE.MathUtils.clamp(v, 1, 10)
   }
+  setBrushSize(cm: number) {
+    this.brushSizeCm = THREE.MathUtils.clamp(cm, 1, 30)
+  }
   setMirror(b: boolean) {
     this.mirror = b
   }
   setSnapEnabled(enabled: boolean) {
     if (this.snapEnabled === enabled) return
     this.snapEnabled = enabled
+    this.emitDesignChange()
+  }
+  setOutlinesVisible(visible: boolean) {
+    if (this.outlinesVisible === visible) return
+    this.outlinesVisible = visible
+    this.applyOutlineVisibility()
     this.emitDesignChange()
   }
   setAutoRotate(b: boolean) {
@@ -235,6 +270,10 @@ export class AtelierEngine {
   }
   setShapeKind(kind: ShapeKind) {
     this.shapeKind = kind
+  }
+  setShapeSize(widthCm: number, heightCm = widthCm) {
+    this.shapeWidthCm = THREE.MathUtils.clamp(widthCm, 2, 80)
+    this.shapeHeightCm = THREE.MathUtils.clamp(heightCm, 2, 80)
   }
   setViewPreset(view: DrawingViewPreset) {
     this.azimuth = view === 'front' ? 0 : view === 'right' ? Math.PI / 2 : view === 'back' ? Math.PI : -Math.PI / 2
@@ -352,6 +391,11 @@ export class AtelierEngine {
     this.emitDesignChange()
   }
 
+  setMaterialOptions(scale: number, rotation: number) {
+    this.materialScale = THREE.MathUtils.clamp(scale, 0.5, 2.5)
+    this.materialRotation = THREE.MathUtils.clamp(rotation, 0, 180)
+  }
+
   setHeightCm(cm: number) {
     this.heightCm = THREE.MathUtils.clamp(Math.round(cm), 145, 195)
     this.applyHeight()
@@ -364,7 +408,7 @@ export class AtelierEngine {
       heightCm: this.heightCm,
       fabric: { color: this.getFabricColor(), preset: this.fabricPreset },
       view: { azimuth: this.azimuth, polar: this.polar, distance: this.desiredDist },
-      settings: { snapEnabled: this.snapEnabled },
+      settings: { snapEnabled: this.snapEnabled, outlinesVisible: this.outlinesVisible },
       items: this.strokeStack.map((item) => structuredClone(item.userData.design ?? {})),
     }
   }
@@ -377,6 +421,7 @@ export class AtelierEngine {
     this.manikinMaterial.color.set(state.fabric?.color || IVORY)
     this.setFabricPreset(state.fabric?.preset || 'matte')
     this.snapEnabled = state.settings?.snapEnabled ?? true
+    this.outlinesVisible = state.settings?.outlinesVisible ?? true
     if (state.view) {
       this.azimuth = state.view.azimuth
       this.polar = state.view.polar
@@ -389,7 +434,16 @@ export class AtelierEngine {
         this.strokeStack.push(item)
       }
     }
+    this.applyOutlineVisibility()
     this.notifyStrokes(false)
+  }
+
+  private applyOutlineVisibility() {
+    for (const item of this.strokeStack) {
+      const design = item.userData.design as { kind?: string } | undefined
+      if (design?.kind !== 'pencil' && design?.kind !== 'shape') continue
+      for (const child of item.children) child.visible = child.name === 'closed-fill' || this.outlinesVisible
+    }
   }
 
   getMeasurements(): CardMeasurements {
@@ -445,7 +499,7 @@ export class AtelierEngine {
 
   zoomBy(factor: number) {
     const s = this.heightCm / BASE_HEIGHT_CM
-    this.desiredDist = THREE.MathUtils.clamp(this.desiredDist * factor, 2.7 * s, 8.5 * s)
+    this.desiredDist = THREE.MathUtils.clamp(this.desiredDist * factor, 0.85 * s, 10.5 * s)
   }
 
   resetView() {
@@ -556,44 +610,219 @@ export class AtelierEngine {
     return texture
   }
 
-  private makeFill(points: THREE.Vector3[], color: string): THREE.Mesh | null {
+  private makeGarmentMaterial(color: string, preset: FabricPreset, scale: number, rotation: number) {
+    const transparent = preset === 'mesh' || preset === 'lace'
+    const material = new THREE.MeshStandardMaterial({
+      color,
+      side: THREE.DoubleSide,
+      transparent,
+      opacity: preset === 'mesh' ? 0.46 : preset === 'lace' ? 0.8 : 1,
+      depthWrite: !transparent,
+      roughness: preset === 'satin' ? 0.2 : preset === 'velvet' ? 0.96 : preset === 'sequin' ? 0.28 : 0.68,
+      metalness: preset === 'sequin' ? 0.4 : preset === 'satin' ? 0.08 : 0.01,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    })
+    if (preset === 'lace' || preset === 'mesh' || preset === 'sequin' || preset === 'velvet') {
+      const texture = this.makeFabricTexture(preset)
+      const safeScale = THREE.MathUtils.clamp(scale, 0.5, 2.5)
+      texture.repeat.set(4 / safeScale, 7 / safeScale)
+      texture.center.set(0.5, 0.5)
+      texture.rotation = THREE.MathUtils.degToRad(rotation)
+      material.map = texture
+    }
+    return material
+  }
+
+  /**
+   * Build a tessellated garment panel from the closed line as it appears in the
+   * current view. Every generated vertex raycasts back to the mannequin; this
+   * makes the fill follow the bust, waist, hips and limbs rather than spanning
+   * them with one flat triangle fan. Areas outside the silhouette remain in the
+   * drawing-depth plane so skirts and other volume can extend beyond the body.
+   */
+  private makeFill(pointsInput: THREE.Vector3[], color: string, preset = this.fabricPreset, scale = this.materialScale, rotation = this.materialRotation): THREE.Mesh | null {
+    const points = pointsInput.map((point) => point.clone())
+    if (points.length > 3 && points[0].distanceTo(points[points.length - 1]) < 0.0005) points.pop()
     if (points.length < 3) return null
-    const center = points.reduce((sum, p) => sum.add(p), new THREE.Vector3()).multiplyScalar(1 / points.length)
-    const vertices = [center, ...points]
-    const positions = new Float32Array(vertices.flatMap((p) => [p.x, p.y, p.z]))
+
+    const rect = this.canvas.getBoundingClientRect()
+    const projected = points.map((point) => {
+      const value = point.clone().project(this.camera)
+      return new THREE.Vector2(value.x, value.y)
+    })
+    // Remove near-duplicate screen samples before triangulation. The original
+    // 3D line stays untouched; this only prevents tiny fill slivers.
+    const contour: THREE.Vector2[] = []
+    for (const point of projected) {
+      const previous = contour[contour.length - 1]
+      const pixelDistance = previous ? Math.hypot((point.x - previous.x) * rect.width * 0.5, (point.y - previous.y) * rect.height * 0.5) : Infinity
+      if (pixelDistance >= 7) contour.push(point)
+    }
+    if (contour.length > 3) {
+      const first = contour[0]
+      const last = contour[contour.length - 1]
+      if (Math.hypot((first.x - last.x) * rect.width * 0.5, (first.y - last.y) * rect.height * 0.5) < 7) contour.pop()
+    }
+    if (contour.length < 3) return null
+    const faces = THREE.ShapeUtils.triangulateShape(contour, [])
+    if (!faces.length) return null
+
+    const viewDirection = this.camera.getWorldDirection(new THREE.Vector3()).normalize()
+    // Put free-hanging cloth at the nearest boundary depth. Using the average
+    // depth can place a skirt panel halfway through the body when the outline
+    // wraps around the hips.
+    const nearestDepth = Math.min(...points.map((point) => point.clone().sub(this.camera.position).dot(viewDirection)))
+    const drapeOrigin = this.camera.position.clone().addScaledVector(viewDirection, Math.max(0.05, nearestDepth - 0.014))
+    const drapePlane = new THREE.Plane().setFromNormalAndCoplanarPoint(viewDirection, drapeOrigin)
+    const minX = Math.min(...contour.map((point) => point.x))
+    const maxX = Math.max(...contour.map((point) => point.x))
+    const minY = Math.min(...contour.map((point) => point.y))
+    const maxY = Math.max(...contour.map((point) => point.y))
+    const width = Math.max(0.0001, maxX - minX)
+    const height = Math.max(0.0001, maxY - minY)
+    const vertices: number[] = []
+    const uvs: number[] = []
     const indices: number[] = []
-    for (let i = 1; i <= points.length; i++) indices.push(0, i, i === points.length ? 1 : i + 1)
-    const geo = new THREE.BufferGeometry()
-    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-    geo.setIndex(indices)
-    geo.computeVertexNormals()
-    return new THREE.Mesh(
-      geo,
-      new THREE.MeshStandardMaterial({ color, roughness: 0.62, side: THREE.DoubleSide, transparent: true, opacity: 0.92 })
-    )
+    const vertexSurfaces: string[] = []
+    const vertexCache = new Map<string, number>()
+
+    const addVertex = (screenPoint: THREE.Vector2) => {
+      const key = `${Math.round(screenPoint.x * 100000)},${Math.round(screenPoint.y * 100000)}`
+      const cached = vertexCache.get(key)
+      if (cached !== undefined) return cached
+      this.raycaster.setFromCamera(screenPoint, this.camera)
+      const bodyHit = this.raycaster.intersectObjects(this.collisionMeshes.length ? this.collisionMeshes : this.bodyMeshes, false)[0]
+      let worldPoint: THREE.Vector3 | null = null
+      let surface = 'drape'
+      if (bodyHit) {
+        let normal = new THREE.Vector3(0, 0, 1)
+        if (bodyHit.normal) normal = bodyHit.normal.clone().applyMatrix3(new THREE.Matrix3().getNormalMatrix(bodyHit.object.matrixWorld)).normalize()
+        else if (bodyHit.face) normal = bodyHit.face.normal.clone().applyMatrix3(new THREE.Matrix3().getNormalMatrix(bodyHit.object.matrixWorld)).normalize()
+        worldPoint = bodyHit.point.clone().addScaledVector(normal, 0.014)
+        // The Meshy mannequin is split into several material primitives even
+        // where the visible skin is continuous. Treat them as one surface;
+        // the world-edge guard below still rejects genuine depth jumps.
+        surface = 'body'
+      } else {
+        const planePoint = new THREE.Vector3()
+        if (this.raycaster.ray.intersectPlane(drapePlane, planePoint)) worldPoint = planePoint.addScaledVector(viewDirection, -0.012)
+      }
+      if (!worldPoint) return -1
+      const index = vertices.length / 3
+      vertices.push(worldPoint.x, worldPoint.y, worldPoint.z)
+      uvs.push((screenPoint.x - minX) / width, (screenPoint.y - minY) / height)
+      vertexSurfaces.push(surface)
+      vertexCache.set(key, index)
+      return index
+    }
+
+    const addTriangle = (a: THREE.Vector2, b: THREE.Vector2, c: THREE.Vector2, depth = 0) => {
+      const screenLength = (p1: THREE.Vector2, p2: THREE.Vector2) => Math.hypot((p1.x - p2.x) * rect.width * 0.5, (p1.y - p2.y) * rect.height * 0.5)
+      const longest = Math.max(screenLength(a, b), screenLength(b, c), screenLength(c, a))
+      if (longest > 24 && depth < 3) {
+        const ab = a.clone().lerp(b, 0.5)
+        const bc = b.clone().lerp(c, 0.5)
+        const ca = c.clone().lerp(a, 0.5)
+        addTriangle(a, ab, ca, depth + 1)
+        addTriangle(ab, b, bc, depth + 1)
+        addTriangle(ca, bc, c, depth + 1)
+        addTriangle(ab, bc, ca, depth + 1)
+        return
+      }
+      const ia = addVertex(a)
+      const ib = addVertex(b)
+      const ic = addVertex(c)
+      if (ia < 0 || ib < 0 || ic < 0) return
+      // Subdivide around the silhouette until the body-to-drape seam is small.
+      // Keeping the final seam triangles closes the cloth without the large,
+      // folded bridges that previously cut through the mannequin.
+      const mixed = vertexSurfaces[ia] !== vertexSurfaces[ib] || vertexSurfaces[ib] !== vertexSurfaces[ic]
+      if (mixed && depth < 5) {
+        const ab = a.clone().lerp(b, 0.5)
+        const bc = b.clone().lerp(c, 0.5)
+        const ca = c.clone().lerp(a, 0.5)
+        addTriangle(a, ab, ca, depth + 1)
+        addTriangle(ab, b, bc, depth + 1)
+        addTriangle(ca, bc, c, depth + 1)
+        addTriangle(ab, bc, ca, depth + 1)
+        return
+      }
+      indices.push(ia, ib, ic)
+    }
+    for (const [a, b, c] of faces) addTriangle(contour[a], contour[b], contour[c])
+    if (!indices.length) return null
+
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3))
+    geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
+    geometry.setIndex(indices)
+    geometry.computeVertexNormals()
+    const mesh = new THREE.Mesh(geometry, this.makeGarmentMaterial(color, preset, scale, rotation))
+    mesh.renderOrder = 2
+    return mesh
+  }
+
+  private pointInsidePolygon(point: THREE.Vector2, polygon: THREE.Vector2[]) {
+    let inside = false
+    for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index++) {
+      const a = polygon[index]
+      const b = polygon[previous]
+      if ((a.y > point.y) !== (b.y > point.y) && point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y) + a.x) inside = !inside
+    }
+    return inside
   }
 
   private fillClosedItemAt(clientX: number, clientY: number): boolean {
     const rect = this.canvas.getBoundingClientRect()
-    this.raycaster.setFromCamera(
-      new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1),
-      this.camera
-    )
-    const hit = this.raycaster.intersectObject(this.strokesGroup, true)[0]
-    if (!hit) return false
-    let group: THREE.Object3D | null = hit.object
-    while (group && group.parent !== this.strokesGroup) group = group.parent
+    const pointer = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1)
+    let group: THREE.Object3D | null = null
+    let smallestArea = Infinity
+    // Prefer the smallest closed projected outline containing the tap. This is
+    // what makes "tap inside to fill" work for nested lingerie panels.
+    for (const item of [...this.strokeStack].reverse()) {
+      const design = item.userData.design as { kind?: string; points?: number[][]; closed?: boolean }
+      if (!design || !Array.isArray(design.points) || (design.kind === 'pencil' && !design.closed) || (design.kind !== 'pencil' && design.kind !== 'shape')) continue
+      const polygon = design.points.map((value) => {
+        const projected = new THREE.Vector3().fromArray(value).project(this.camera)
+        return new THREE.Vector2(projected.x, projected.y)
+      })
+      if (polygon.length > 3 && polygon[0].distanceTo(polygon[polygon.length - 1]) < 0.0005) polygon.pop()
+      if (polygon.length < 3 || !this.pointInsidePolygon(pointer, polygon)) continue
+      let area = 0
+      for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index++) area += polygon[previous].x * polygon[index].y - polygon[index].x * polygon[previous].y
+      area = Math.abs(area)
+      if (area < smallestArea) { smallestArea = area; group = item }
+    }
+    if (!group) {
+      this.raycaster.setFromCamera(pointer, this.camera)
+      const hit = this.raycaster.intersectObject(this.strokesGroup, true)[0]
+      if (hit) {
+        group = hit.object
+        while (group && group.parent !== this.strokesGroup) group = group.parent
+      }
+    }
     if (!group) return false
-    const design = group.userData.design as { kind?: string; points?: number[][]; closed?: boolean; fillColor?: string }
+    const design = group.userData.design as { kind?: string; points?: number[][]; closed?: boolean; fillColor?: string; fillPreset?: FabricPreset; fillScale?: number; fillRotation?: number; fillGeometry?: { positions: number[]; indices: number[]; uvs: number[] } }
     if (!design || !Array.isArray(design.points) || (design.kind === 'pencil' && !design.closed)) return false
     const points = design.points.map((p) => new THREE.Vector3(p[0], p[1], p[2]))
-    const fill = this.makeFill(points, this.color)
+    const fill = this.makeFill(points, this.color, this.fabricPreset, this.materialScale, this.materialRotation)
     if (!fill) return false
     const previous = group.getObjectByName('closed-fill')
     if (previous) { group.remove(previous); disposeObject(previous) }
     fill.name = 'closed-fill'
+    fill.visible = true
     group.add(fill)
     design.fillColor = this.color
+    design.fillPreset = this.fabricPreset
+    design.fillScale = this.materialScale
+    design.fillRotation = this.materialRotation
+    design.fillGeometry = {
+      positions: Array.from((fill.geometry.getAttribute('position') as THREE.BufferAttribute).array),
+      indices: Array.from(fill.geometry.index?.array ?? []),
+      uvs: Array.from((fill.geometry.getAttribute('uv') as THREE.BufferAttribute).array),
+    }
     this.emitDesignChange()
     return true
   }
@@ -632,21 +861,42 @@ export class AtelierEngine {
   }
 
   private placeShape(hit: { p: THREE.Vector3; n: THREE.Vector3 }) {
-    const radius = 0.05 + this.thickness * 0.018
-    const count = this.shapeKind === 'circle' ? 40 : 4
+    const halfWidth = this.shapeWidthCm * 0.01 * (this.heightCm / BASE_HEIGHT_CM)
+    const halfHeight = (this.shapeKind === 'circle' || this.shapeKind === 'square' ? this.shapeWidthCm : this.shapeHeightCm) * 0.01 * (this.heightCm / BASE_HEIGHT_CM)
+    const count = this.shapeKind === 'circle' ? 48 : 32
     const points: THREE.Vector3[] = []
-    const up=Math.abs(hit.n.y)>.9?new THREE.Vector3(1,0,0):new THREE.Vector3(0,1,0),t1=new THREE.Vector3().crossVectors(hit.n,up).normalize(),t2=new THREE.Vector3().crossVectors(hit.n,t1).normalize()
+    const center = hit.p.clone().project(this.camera)
+    const cameraRight = new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 0).normalize()
+    const cameraUp = new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 1).normalize()
+    const projectedRight = hit.p.clone().addScaledVector(cameraRight, halfWidth).project(this.camera)
+    const projectedUp = hit.p.clone().addScaledVector(cameraUp, halfHeight).project(this.camera)
+    const ndcHalfWidth = Math.max(0.002, Math.abs(projectedRight.x - center.x))
+    const ndcHalfHeight = Math.max(0.002, Math.abs(projectedUp.y - center.y))
+    const targets = this.collisionMeshes.length ? this.collisionMeshes : this.bodyMeshes
     for (let i = 0; i < count; i++) {
-      const a = (i / count) * Math.PI * 2
-      let x = Math.cos(a) * radius
-      let y = Math.sin(a) * radius
-      if (this.shapeKind !== 'circle') {
-        const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]][i]
-        x = corners[0] * radius * (this.shapeKind === 'rectangle' ? 1.5 : 1)
-        y = corners[1] * radius * (this.shapeKind === 'rectangle' ? 0.72 : 1)
+      let x = 0
+      let y = 0
+      if (this.shapeKind === 'circle') {
+        const angle = (i / count) * Math.PI * 2
+        x = Math.cos(angle)
+        y = Math.sin(angle)
+      } else {
+        const side = Math.floor(i / 8)
+        const progress = (i % 8) / 8
+        if (side === 0) { x = -1 + progress * 2; y = -1 }
+        else if (side === 1) { x = 1; y = -1 + progress * 2 }
+        else if (side === 2) { x = 1 - progress * 2; y = 1 }
+        else { x = -1; y = 1 - progress * 2 }
       }
-      points.push(hit.p.clone().addScaledVector(t1,x).addScaledVector(t2,y).addScaledVector(hit.n,0.008))
+      this.raycaster.setFromCamera(new THREE.Vector2(center.x + x * ndcHalfWidth, center.y + y * ndcHalfHeight), this.camera)
+      const surfaceHit = this.raycaster.intersectObjects(targets, false)[0]
+      if (!surfaceHit) continue
+      let normal = new THREE.Vector3(0, 0, 1)
+      if (surfaceHit.normal) normal = surfaceHit.normal.clone().applyMatrix3(new THREE.Matrix3().getNormalMatrix(surfaceHit.object.matrixWorld)).normalize()
+      else if (surfaceHit.face) normal = surfaceHit.face.normal.clone().applyMatrix3(new THREE.Matrix3().getNormalMatrix(surfaceHit.object.matrixWorld)).normalize()
+      points.push(this.offsetPoint(surfaceHit.point, normal))
     }
+    if (points.length < 3) return
     const curve = new THREE.CatmullRomCurve3(points,true,'centripetal',.5)
     const mesh = new THREE.Mesh(
       new THREE.TubeGeometry(curve, Math.max(32, count * 6), this.strokeRadius(), 8, true),
@@ -654,9 +904,10 @@ export class AtelierEngine {
     )
     const group = new THREE.Group()
     group.add(mesh)
-    group.userData.design = { kind: 'shape', shape: this.shapeKind, color: this.color, radius: this.strokeRadius(), points: points.map((p) => p.toArray()) }
+    group.userData.design = { kind: 'shape', shape: this.shapeKind, widthCm: this.shapeWidthCm, heightCm: this.shapeHeightCm, color: this.color, radius: this.strokeRadius(), points: points.map((p) => p.toArray()) }
     this.strokesGroup.add(group)
     this.strokeStack.push(group)
+    this.applyOutlineVisibility()
     this.notifyStrokes()
   }
 
@@ -679,6 +930,13 @@ export class AtelierEngine {
       group.add(new THREE.Points(geo, new THREE.PointsMaterial({ color: String(spec.color), size: Number(spec.size), map: makeSoftDotTexture(), transparent: true, opacity: 0.85, depthWrite: false })))
       return group
     }
+    if (kind === 'brush') {
+      const points = ((spec.points as number[][]) || []).map((point) => new THREE.Vector3().fromArray(point))
+      const normals = ((spec.normals as number[][]) || []).map((normal) => new THREE.Vector3().fromArray(normal).normalize())
+      if (!points.length) return null
+      group.add(this.makeBrushDabs(points, normals, Number(spec.radius) || 0.08, String(spec.color)))
+      return group
+    }
     if (kind === 'pencil' || kind === 'shape') {
       const points = ((spec.points as number[][]) || []).map((p) => new THREE.Vector3().fromArray(p))
       if (!points.length) return null
@@ -690,7 +948,27 @@ export class AtelierEngine {
       if (points.length === 1) mesh.position.copy(points[0])
       group.add(mesh)
       if (spec.fillColor) {
-        const fill = this.makeFill(points, String(spec.fillColor))
+        const saved = spec.fillGeometry as { positions?: number[]; indices?: number[]; uvs?: number[] } | undefined
+        let fill: THREE.Mesh | null = null
+        if (saved?.positions?.length && saved.indices?.length) {
+          const geometry = new THREE.BufferGeometry()
+          geometry.setAttribute('position', new THREE.Float32BufferAttribute(saved.positions, 3))
+          if (saved.uvs?.length) geometry.setAttribute('uv', new THREE.Float32BufferAttribute(saved.uvs, 2))
+          geometry.setIndex(saved.indices)
+          geometry.computeVertexNormals()
+          fill = new THREE.Mesh(
+            geometry,
+            this.makeGarmentMaterial(
+              String(spec.fillColor),
+              (spec.fillPreset as FabricPreset) || 'matte',
+              Number(spec.fillScale) || 1,
+              Number(spec.fillRotation) || 0,
+            ),
+          )
+          fill.renderOrder = 2
+        } else {
+          fill = this.makeFill(points, String(spec.fillColor), (spec.fillPreset as FabricPreset) || 'matte', Number(spec.fillScale) || 1, Number(spec.fillRotation) || 0)
+        }
         if (fill) { fill.name = 'closed-fill'; group.add(fill) }
       }
       return group
@@ -709,6 +987,12 @@ export class AtelierEngine {
     c.removeEventListener('pointercancel', this.boundUp)
     c.removeEventListener('wheel', this.boundWheel)
     c.removeEventListener('contextmenu', this.boundCtx)
+    for (const entry of this.collisionGenerators) {
+      ;(entry.mesh.geometry as BVHGeometry).disposeBoundsTree?.()
+      disposeObject(entry.mesh)
+    }
+    this.collisionGenerators = []
+    this.collisionMeshes = []
     disposeObject(this.scene)
     this.renderer.dispose()
   }
@@ -724,10 +1008,44 @@ export class AtelierEngine {
       this.referenceModel.scale.setScalar(1.8 * s)
       this.referenceModel.position.set(0, 1.72 * s, 0)
       this.target.set(0, 1.7 * s, 0)
+      this.referenceModel.updateMatrixWorld(true)
+      this.refreshCollisionMeshes()
     }
     // keep framing proportional when height changes
     this.desiredDist = 5.2 * s
-    this.dist = Math.min(this.dist, 8.5 * s)
+    this.dist = Math.min(this.dist, 10.5 * s)
+  }
+
+  private refreshCollisionMeshes() {
+    for (const entry of this.collisionGenerators) {
+      const geometry = entry.mesh.geometry as BVHGeometry
+      geometry.disposeBoundsTree?.()
+      entry.generator.generate(geometry)
+      geometry.computeBoundsTree()
+      geometry.computeBoundingSphere()
+    }
+  }
+
+  private buildCollisionMeshes(meshes: THREE.Object3D[]) {
+    for (const entry of this.collisionGenerators) {
+      ;(entry.mesh.geometry as BVHGeometry).disposeBoundsTree?.()
+      disposeObject(entry.mesh)
+    }
+    this.collisionGenerators = []
+    this.collisionMeshes = []
+    for (const object of meshes) {
+      const source = object as THREE.Mesh
+      const generator = new StaticGeometryGenerator(source)
+      generator.useGroups = false
+      generator.attributes = ['position', 'normal']
+      const geometry = generator.generate() as BVHGeometry
+      geometry.computeBoundsTree()
+      geometry.computeBoundingSphere()
+      const proxy = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }))
+      proxy.name = 'mannequin-collision-proxy'
+      this.collisionGenerators.push({ generator, mesh: proxy })
+      this.collisionMeshes.push(proxy)
+    }
   }
 
   private notifyStrokes(emit = true) {
@@ -761,6 +1079,7 @@ export class AtelierEngine {
         this.standGroup.visible = false
         this.scene.add(model)
         this.applyHeight()
+        this.buildCollisionMeshes(loadedMeshes)
       },
       undefined,
       (error) => console.error('[atelier] Could not load mannequin model', error)
@@ -821,7 +1140,33 @@ export class AtelierEngine {
   }
 
   private strokeRadius(): number {
+    if (this.tool === 'brush') return this.brushSizeCm * 0.01 * (this.heightCm / BASE_HEIGHT_CM)
     return 0.0035 + this.thickness * 0.0021 // ~0.006 .. ~0.025 local units
+  }
+
+  private makeBrushDabs(points: THREE.Vector3[], normals: THREE.Vector3[], radius: number, color: string) {
+    const geometry = new THREE.CircleGeometry(radius, 18)
+    const material = new THREE.MeshStandardMaterial({
+      color,
+      side: THREE.DoubleSide,
+      roughness: 0.72,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    })
+    const dabs = new THREE.InstancedMesh(geometry, material, points.length)
+    const matrix = new THREE.Matrix4()
+    const scale = new THREE.Vector3(1, 1, 1)
+    const forward = new THREE.Vector3(0, 0, 1)
+    points.forEach((point, index) => {
+      const normal = normals[index]?.clone().normalize() || forward
+      const quaternion = new THREE.Quaternion().setFromUnitVectors(forward, normal)
+      matrix.compose(point, quaternion, scale)
+      dabs.setMatrixAt(index, matrix)
+    })
+    dabs.instanceMatrix.needsUpdate = true
+    dabs.frustumCulled = false
+    return dabs
   }
 
   /** Raycast onto the manikin body (torso + bust); returns local-space point + normal */
@@ -832,7 +1177,7 @@ export class AtelierEngine {
       -((clientY - rect.top) / rect.height) * 2 + 1
     )
     this.raycaster.setFromCamera(ndc, this.camera)
-    const hits = this.raycaster.intersectObjects(this.bodyMeshes, false)
+    const hits = this.raycaster.intersectObjects(this.collisionMeshes.length ? this.collisionMeshes : this.bodyMeshes, false)
     if (!hits.length) return null
     const hit = hits[0]
     // Use the renderer's barycentrically interpolated vertex normal. A flat
@@ -947,10 +1292,7 @@ export class AtelierEngine {
       return
     }
     if (this.tool === 'fill') {
-      if (!this.fillClosedItemAt(e.clientX, e.clientY)) {
-        const hit = this.hitManikin(e.clientX, e.clientY)
-        if (hit) this.setFabricColor(this.color)
-      }
+      this.fillClosedItemAt(e.clientX, e.clientY)
       return
     }
     if (this.tool === 'stone') {
@@ -986,8 +1328,8 @@ export class AtelierEngine {
       if (this.pinchBase.d > 0) {
         this.desiredDist = THREE.MathUtils.clamp(
           this.pinchBase.dist * (this.pinchBase.d / d),
-          2.7 * s,
-          8.5 * s
+          0.85 * s,
+          10.5 * s
         )
       }
       this.azimuth = this.pinchBase.az - (midX - this.pinchBase.midX) * 0.006
@@ -1013,7 +1355,7 @@ export class AtelierEngine {
       }
       return
     }
-    if ((this.tool === 'pencil' || this.tool === 'spray') && this.stroke) {
+    if ((this.tool === 'pencil' || this.tool === 'brush' || this.tool === 'spray') && this.stroke) {
       const coalesced=e.getCoalescedEvents?.()||[e]
       const stride=Math.max(1,Math.ceil(coalesced.length/4))
       const samples=coalesced.filter((_,index)=>index%stride===0||index===coalesced.length-1).slice(-4)
@@ -1061,7 +1403,7 @@ export class AtelierEngine {
             Math.hypot(e.clientX - this.lastTap.x, e.clientY - this.lastTap.y) < 60
           ) {
             const s = this.heightCm / BASE_HEIGHT_CM
-            this.desiredDist = this.desiredDist > 4.4 * s ? 3.2 * s : 5.2 * s
+            this.desiredDist = this.desiredDist > 2.2 * s ? 1.25 * s : 5.2 * s
             this.lastTap = null
           } else {
             this.lastTap = { t: now, x: e.clientX, y: e.clientY }
@@ -1091,7 +1433,8 @@ export class AtelierEngine {
   private offsetPoint(p: THREE.Vector3, n: THREE.Vector3): THREE.Vector3 {
     // Offset by more than the tube radius so the whole garment stroke stays
     // above the skin instead of placing its centre on the skin and clipping.
-    return p.clone().addScaledVector(n, this.strokeRadius() * 1.45 + 0.004)
+    const offset = this.tool === 'brush' ? 0.009 : this.strokeRadius() * 1.45 + 0.004
+    return p.clone().addScaledVector(n, offset)
   }
 
   private mirrored(v: THREE.Vector3): THREE.Vector3 {
@@ -1152,8 +1495,9 @@ export class AtelierEngine {
     const group = new THREE.Group()
     this.stroke = {
       group,
-      kind: this.tool === 'spray' ? 'spray' : 'pencil',
+      kind: this.tool === 'spray' ? 'spray' : this.tool === 'brush' ? 'brush' : 'pencil',
       points: [],
+      normals: [],
       lastLocal: null,
       planeRef: null,
       previewMesh: null,
@@ -1172,19 +1516,22 @@ export class AtelierEngine {
     if (!st) return
     const r = this.strokeRadius()
     let pt = this.offsetPoint(hit.p, hit.n)
-    if (st.kind === 'pencil' && this.snapEnabled && st.points.length === 0) {
-      pt = this.findSnapPoint(pt) ?? pt
+    if (st.kind === 'pencil' && this.snapEnabled) {
+      const existingTarget = this.findSnapPoint(pt)
+      const closeTarget = st.points.length > 3 && st.points[0].distanceTo(pt) < this.snapDistance() ? st.points[0] : null
+      pt = closeTarget?.clone() ?? existingTarget ?? pt
     }
     st.lastLocal = pt
 
-    if (st.kind === 'pencil') {
-      const minDist = Math.max(0.006, r * 0.55)
+    if (st.kind === 'pencil' || st.kind === 'brush') {
+      const minDist = Math.max(0.006, r * (st.kind === 'brush' ? 0.32 : 0.55))
       const last = st.points[st.points.length - 1]
       const distance=last?.distanceTo(pt)??0
       if (last && distance < minDist) return
       // Do not add straight 3D chords between surface hits. Those shortcuts
       // cut through curved areas such as the bust, hips, arms and legs.
       st.points.push(pt)
+      st.normals.push(hit.n.clone().normalize())
       // Refresh a cheap live preview at most once per animation frame. The
       // smooth tube is built only after the pencil is lifted.
       st.previewDirty = true
@@ -1299,8 +1646,8 @@ export class AtelierEngine {
     }
 
     // final geometry for pencil (smoother) + mirror twin
-    if (st.kind === 'pencil') {
-      if (this.snapEnabled && st.points.length > 1) {
+    if (st.kind === 'pencil' || st.kind === 'brush') {
+      if (st.kind === 'pencil' && this.snapEnabled && st.points.length > 1) {
         const lastIndex = st.points.length - 1
         const end = st.points[lastIndex]
         let target = this.findSnapPoint(end)
@@ -1317,7 +1664,10 @@ export class AtelierEngine {
         else material.dispose()
         st.previewMesh = null
       }
-      if (st.points.length === 1) {
+      if (st.kind === 'brush') {
+        st.previewMesh = this.makeBrushDabs(st.points, st.normals, this.strokeRadius(), this.color)
+        st.group.add(st.previewMesh)
+      } else if (st.points.length === 1) {
         const geo = new THREE.SphereGeometry(this.strokeRadius() * 1.15, 14, 12)
         const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(this.color), roughness: 0.55 })
         st.previewMesh = new THREE.Mesh(geo, mat)
@@ -1331,7 +1681,7 @@ export class AtelierEngine {
         st.previewMesh = new THREE.Mesh(geo, mat)
         st.group.add(st.previewMesh)
       }
-      if (this.mirror && st.previewMesh) {
+      if (st.kind === 'pencil' && this.mirror && st.previewMesh) {
         const mirroredPts = st.points.map((p) => this.mirrored(p))
         let mgeo: THREE.BufferGeometry
         if (mirroredPts.length === 1) {
@@ -1359,13 +1709,23 @@ export class AtelierEngine {
             points: st.points.map((p) => p.toArray()),
             closed: st.points.length > 3 && st.points[0].distanceTo(st.points[st.points.length - 1]) < this.strokeRadius() * 8,
           }
-        : {
+        : st.kind === 'brush'
+          ? {
+              kind: 'brush',
+              color: this.color,
+              radius: this.strokeRadius(),
+              sizeCm: this.brushSizeCm,
+              points: st.points.map((point) => point.toArray()),
+              normals: st.normals.map((normal) => normal.toArray()),
+            }
+          : {
             kind: 'spray',
             color: this.color,
             size: this.strokeRadius() * 3.4,
             points: st.positions ? Array.from(st.positions.subarray(0, st.posCount * 3)) : [],
           }
     this.strokeStack.push(st.group)
+    this.applyOutlineVisibility()
     this.notifyStrokes()
   }
 

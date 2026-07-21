@@ -60,6 +60,7 @@
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.4.0",
     "three": "^0.185.1",
+    "three-mesh-bvh": "^0.9.13",
     "vaul": "^1.1.2",
     "zod": "^4.3.5"
   },

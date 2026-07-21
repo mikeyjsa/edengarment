@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   Pencil,
+  Paintbrush,
   SprayCan,
   PaintBucket,
   Eraser,
@@ -105,24 +106,26 @@ const PALETTE = [
 ]
 
 const TOOLS: Array<{ id: Tool; label: string; icon: typeof Pencil }> = [
+  { id: 'move', label: 'Move', icon: Hand },
   { id: 'pencil', label: 'Pencil', icon: Pencil },
-  { id: 'spray', label: 'Spray', icon: SprayCan },
+  { id: 'brush', label: 'Paintbrush', icon: Paintbrush },
   { id: 'fill', label: 'Fill', icon: PaintBucket },
-  { id: 'stone', label: 'Stones', icon: Gem },
+  { id: 'eraser', label: 'Eraser', icon: Eraser },
   { id: 'shape', label: 'Shapes', icon: Shapes },
+  { id: 'stone', label: 'Stones', icon: Gem },
+  { id: 'spray', label: 'Spray', icon: SprayCan },
   { id: 'measure', label: 'Measure', icon: Ruler },
   { id: 'select', label: 'Select', icon: MousePointer2 },
-  { id: 'eraser', label: 'Eraser', icon: Eraser },
-  { id: 'move', label: 'Move', icon: Hand },
 ]
-const SURFACE_3D_TOOLS = new Set<Tool>(['move','pencil','spray','fill','stone','shape','eraser'])
+const SURFACE_3D_TOOLS = new Set<Tool>(['move','pencil','brush','spray','fill','stone','shape','eraser'])
 
 const TOOL_HINTS: Record<Tool, string> = {
   pencil: '3D surface drawing · Snap joins nearby lines and closes fillable outlines',
-  spray: 'Soft 2D airbrush · use Move when you want to rotate the model',
-  fill: 'Tap inside a closed 2D line or shape — the mannequin is never filled',
+  brush: 'Solid 3D paintbrush · choose a broad size and paint directly over the mannequin surface',
+  spray: 'Soft 3D airbrush that follows the visible mannequin surface',
+  fill: 'Tap inside a closed 3D outline · fabric wraps to the body contours and drapes outside the silhouette',
   stone: 'Paint on stones using the shape, size and batch count below',
-  shape: 'Drag to draw a perfect closed shape; use Fill to colour inside it',
+  shape: 'Tap the mannequin to place a closed surface shape; use Fill inside it',
   measure: 'Drag between two points to add a saved measurement',
   select: 'Tap an item to move, resize, rotate, duplicate or delete it',
   eraser: 'Tap or drag over a stroke to remove it',
@@ -266,8 +269,10 @@ export default function Home() {
   const [tool, setTool] = useState<Tool>('move')
   const [color, setColor] = useState('#8e1f2f')
   const [thickness, setThickness] = useState(4)
+  const [brushSizeCm, setBrushSizeCm] = useState(8)
   const [mirror, setMirror] = useState(false)
   const [snapEnabled, setSnapEnabled] = useState(true)
+  const [outlinesVisible, setOutlinesVisible] = useState(true)
   const [autoRotate, setAutoRotate] = useState(false)
   const [strokes, setStrokes] = useState(0)
   const [surfaceStrokes, setSurfaceStrokes] = useState(0)
@@ -284,6 +289,8 @@ export default function Home() {
   const [materialScale, setMaterialScale] = useState(1)
   const [materialRotation, setMaterialRotation] = useState(0)
   const [shapeKind, setShapeKind] = useState<ShapeKind>('circle')
+  const [shapeWidthCm, setShapeWidthCm] = useState(12)
+  const [shapeHeightCm, setShapeHeightCm] = useState(8)
   const [saveStatus, setSaveStatus] = useState<'loading' | 'saved' | 'saving'>('loading')
   const [installPrompt, setInstallPrompt] = useState<Event | null>(null)
   const [drawingViews, setDrawingViews] = useState<Record<DrawingViewId, DrawingAction[]>>(EMPTY_VIEWS)
@@ -337,6 +344,7 @@ export default function Home() {
           setFabric(saved.fabric.preset)
           setColor(saved.fabric.color)
           setSnapEnabled(saved.settings?.snapEnabled ?? true)
+          setOutlinesVisible(saved.settings?.outlinesVisible ?? true)
         }
       })
       .finally(() => {
@@ -393,11 +401,17 @@ export default function Home() {
     engineRef.current?.setThickness(thickness)
   }, [thickness])
   useEffect(() => {
+    engineRef.current?.setBrushSize(brushSizeCm)
+  }, [brushSizeCm])
+  useEffect(() => {
     engineRef.current?.setMirror(mirror)
   }, [mirror])
   useEffect(() => {
     engineRef.current?.setSnapEnabled(snapEnabled)
   }, [snapEnabled])
+  useEffect(() => {
+    engineRef.current?.setOutlinesVisible(outlinesVisible)
+  }, [outlinesVisible])
   useEffect(() => {
     engineRef.current?.setAutoRotate(autoRotate)
   }, [autoRotate])
@@ -408,11 +422,17 @@ export default function Home() {
     engineRef.current?.setFabricPreset(fabric)
   }, [fabric])
   useEffect(() => {
+    engineRef.current?.setMaterialOptions(materialScale, materialRotation)
+  }, [materialScale, materialRotation])
+  useEffect(() => {
     engineRef.current?.setStoneOptions(stoneShape, stoneSize, stoneCount)
   }, [stoneShape, stoneSize, stoneCount])
   useEffect(() => {
     engineRef.current?.setShapeKind(shapeKind)
   }, [shapeKind])
+  useEffect(() => {
+    engineRef.current?.setShapeSize(shapeWidthCm, shapeHeightCm)
+  }, [shapeWidthCm, shapeHeightCm])
 
   useEffect(() => {
     engineRef.current?.setViewPreset(activeView)
@@ -658,6 +678,7 @@ export default function Home() {
       setFabric(project.design.fabric.preset)
       setColor(project.design.fabric.color)
       setSnapEnabled(project.design.settings?.snapEnabled ?? true)
+      setOutlinesVisible(project.design.settings?.outlinesVisible ?? true)
       applyDrawingProject(project.drawing)
       window.requestAnimationFrame(() => engineRef.current?.importState(project.design))
       setActiveProjectId(project.id)
@@ -867,6 +888,14 @@ export default function Home() {
           <button className="studio-top-action" aria-label="Open saved project files" onClick={()=>void openProjectLibrary()}><FolderOpen size={17}/><span>FILES</span></button>
           <button className="studio-top-action" aria-label="Start a new design and clear all" onClick={()=>void newDesign()}><FilePlus2 size={17}/><span>NEW</span></button>
           <button aria-label="Layers" style={iconBtn(layersOpen)} onClick={() => {setPreviewPlaneId(activePlaneId);setLayersOpen(true)}}><Layers size={20} /></button>
+          <button
+            className="studio-top-action outline-toggle"
+            aria-label={outlinesVisible ? 'Hide pencil lines and show fills only' : 'Show pencil lines'}
+            aria-pressed={!outlinesVisible}
+            onClick={() => setOutlinesVisible((visible) => !visible)}
+          >
+            {outlinesVisible ? <EyeOff size={18}/> : <Eye size={18}/>}<span>{outlinesVisible ? 'FILLS ONLY' : 'SHOW LINES'}</span>
+          </button>
           <button aria-label="Garment components" style={iconBtn(componentsOpen)} onClick={() => setComponentsOpen(true)}><Scissors size={20} /></button>
           <button aria-label="Dancer and movement checks" style={iconBtn(movementOpen)} onClick={() => setMovementOpen(true)}><Activity size={20} /></button>
           <button aria-label="Fabrics and materials" style={iconBtn(materialsOpen)} onClick={() => setMaterialsOpen(true)}>
@@ -919,10 +948,10 @@ export default function Home() {
 
       {/* zoom controls */}
       <div
-        className="absolute right-3 flex flex-col gap-2"
+        className="zoom-controls absolute right-3 flex flex-col gap-2"
         style={{ top: '50%', transform: 'translateY(-50%)', zIndex: 10 }}
       >
-        <button aria-label="Zoom in" style={iconBtn(false)} onClick={() => engineRef.current?.zoomBy(0.78)}>
+        <button aria-label="Zoom in" style={iconBtn(false)} onClick={() => engineRef.current?.zoomBy(0.64)}>
           <ZoomIn size={20} />
         </button>
         <button aria-label="Zoom out" style={iconBtn(false)} onClick={() => engineRef.current?.zoomBy(1.28)}>
@@ -1036,6 +1065,17 @@ export default function Home() {
               </div>
             )}
 
+            {tool === 'brush' && (
+              <div className="brush-controls">
+                <div className="brush-size-label"><span>PAINTBRUSH SIZE</span><strong>{brushSizeCm} cm</strong></div>
+                <input aria-label="Paintbrush size in centimetres" type="range" min={1} max={30} step={1} value={brushSizeCm} onChange={(event)=>setBrushSizeCm(Number(event.target.value))}/>
+                <div className="brush-size-presets">
+                  {[4,8,16,24].map((size)=><button key={size} className="option-chip" data-active={brushSizeCm===size} onClick={()=>setBrushSizeCm(size)}>{size} CM</button>)}
+                </div>
+                <div className="tool-subhint">{TOOL_HINTS.brush}</div>
+              </div>
+            )}
+
             {tool === 'stone' && (
               <div>
                 <div className="mb-2 flex gap-2 overflow-x-auto">
@@ -1055,34 +1095,34 @@ export default function Home() {
             )}
 
             {tool === 'shape' && (
-              <div className="flex items-center gap-2">
-                {([
-                  ['circle', Circle],
-                  ['square', Square],
-                  ['rectangle', Shapes],
-                ] as Array<[ShapeKind, typeof Circle]>).map(([kind, Icon]) => (
-                  <button key={kind} onClick={() => setShapeKind(kind)} className="option-chip flex flex-1 items-center justify-center gap-2" data-active={shapeKind === kind}>
-                    <Icon size={16} /> {kind.toUpperCase()}
-                  </button>
-                ))}
+              <div className="shape-controls">
+                <div className="flex items-center gap-2">
+                  {([
+                    ['circle', Circle],
+                    ['square', Square],
+                    ['rectangle', Shapes],
+                  ] as Array<[ShapeKind, typeof Circle]>).map(([kind, Icon]) => (
+                    <button key={kind} onClick={() => setShapeKind(kind)} className="option-chip flex flex-1 items-center justify-center gap-2" data-active={shapeKind === kind}>
+                      <Icon size={16} /> {kind.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+                <div className="shape-size-grid">
+                  <label><span>{shapeKind === 'circle' ? 'DIAMETER' : 'WIDTH'} <b>{shapeWidthCm} cm</b></span><input aria-label="Shape width in centimetres" type="range" min={2} max={60} step={1} value={shapeWidthCm} onChange={(event)=>setShapeWidthCm(Number(event.target.value))}/></label>
+                  {shapeKind === 'rectangle' && <label><span>HEIGHT <b>{shapeHeightCm} cm</b></span><input aria-label="Shape height in centimetres" type="range" min={2} max={60} step={1} value={shapeHeightCm} onChange={(event)=>setShapeHeightCm(Number(event.target.value))}/></label>}
+                </div>
               </div>
             )}
 
             {tool === 'fill' && (
-              <div className="flex items-center justify-between">
-                <span style={{ color: 'rgba(239,231,218,0.6)', fontSize: 12 }}>{TOOL_HINTS.fill}</span>
+              <div className="surface-fill-controls">
+                <div className="surface-fill-copy"><strong>SURFACE FILL</strong><span>{TOOL_HINTS.fill}</span></div>
+                <div className="active-fabric-chip"><span className="active-fabric-dot" style={{background:color}}/><span>{fabric === 'matte' ? 'STRETCH JERSEY' : fabric.toUpperCase()}</span></div>
                 <button
                   onClick={() => setMaterialsOpen(true)}
-                  style={{
-                    padding: '8px 14px',
-                    borderRadius: 12,
-                    background: 'rgba(239,231,218,0.1)',
-                    color: '#efe7da',
-                    fontSize: 12,
-                    whiteSpace: 'nowrap',
-                  }}
+                  className="choose-fabric-button"
                 >
-                  Choose material
+                  CHANGE FABRIC
                 </button>
               </div>
             )}
@@ -1246,7 +1286,7 @@ export default function Home() {
             <div className="mb-4 flex items-center justify-between">
               <div>
                 <div className="sheet-title">FABRIC LIBRARY</div>
-                <div className="sheet-subtitle">Dancewear · lingerie · performance materials</div>
+                <div className="sheet-subtitle">Choose fabric, then tap inside a closed 3D garment outline</div>
               </div>
               <button aria-label="Close materials" style={iconBtn(false)} onClick={() => setMaterialsOpen(false)}><X size={18} /></button>
             </div>
@@ -1270,7 +1310,7 @@ export default function Home() {
               <input aria-label="Material colour" type="color" value={color} onChange={(e) => setColor(e.target.value)} className="fabric-color" />
               <label className="material-adjust"><span>SCALE {materialScale.toFixed(1)}×</span><input aria-label="Texture scale" type="range" min={.5} max={2.5} step={.1} value={materialScale} onChange={(e)=>setMaterialScale(Number(e.target.value))}/></label>
               <label className="material-adjust"><span>ANGLE {materialRotation}°</span><input aria-label="Texture angle" type="range" min={0} max={180} step={15} value={materialRotation} onChange={(e)=>setMaterialRotation(Number(e.target.value))}/></label>
-              <button className="done-button" onClick={() => setMaterialsOpen(false)}>APPLY MATERIAL</button>
+              <button className="done-button" onClick={() => {engineRef.current?.setFabricColor(color);engineRef.current?.setFabricPreset(fabric);engineRef.current?.setMaterialOptions(materialScale,materialRotation);setTool('fill');setMaterialsOpen(false)}}>USE FOR NEXT FILL</button>
             </div>
           </div>
         </div>

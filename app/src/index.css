@@ -233,6 +233,26 @@ button {
 .stone-actions button { min-height:32px; display:flex; align-items:center; gap:5px; padding:0 10px; border:1px solid rgba(201,169,106,.35); border-radius:10px; color:#c9a96a; background:rgba(201,169,106,.08); font-size:8px; letter-spacing:.08em; }
 .stone-actions button:disabled { opacity:.3; }
 
+.surface-fill-controls { display:grid; grid-template-columns:minmax(0,1fr) auto auto; align-items:center; gap:12px; }
+.surface-fill-copy { min-width:0; display:grid; gap:3px; }
+.surface-fill-copy strong { color:#c9a96a; font-size:9px; letter-spacing:.13em; }
+.surface-fill-copy span { color:rgba(239,231,218,.62); font-size:11px; line-height:1.35; }
+.active-fabric-chip { min-height:36px; display:flex; align-items:center; gap:7px; padding:0 10px; border:1px solid rgba(201,169,106,.28); border-radius:11px; color:rgba(239,231,218,.72); background:rgba(201,169,106,.08); font-size:8px; letter-spacing:.08em; white-space:nowrap; }
+.active-fabric-dot { width:16px; height:16px; flex:0 0 16px; border:1px solid rgba(255,255,255,.32); border-radius:50%; }
+.choose-fabric-button { min-height:38px; padding:0 13px; border:1px solid rgba(239,231,218,.14); border-radius:11px; color:#efe7da; background:rgba(239,231,218,.09); font-size:9px; font-weight:700; letter-spacing:.08em; white-space:nowrap; }
+.shape-controls { display:grid; gap:10px; }
+.shape-size-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+.shape-size-grid label { display:grid; gap:4px; color:rgba(239,231,218,.62); font-size:10px; letter-spacing:.08em; }
+.shape-size-grid label span { display:flex; justify-content:space-between; }
+.shape-size-grid b { color:#efe7da; font-weight:600; }
+.shape-size-grid input { width:100%; height:30px; accent-color:#c9a96a; }
+.brush-controls { display:grid; grid-template-columns:minmax(150px,1fr) minmax(180px,1.5fr) auto; align-items:center; gap:10px; }
+.brush-size-label { display:flex; justify-content:space-between; gap:10px; color:rgba(239,231,218,.58); font-size:10px; letter-spacing:.08em; }
+.brush-size-label strong { color:#efe7da; }
+.brush-controls > input { width:100%; height:32px; accent-color:#c9a96a; }
+.brush-size-presets { display:flex; gap:6px; }
+.tool-subhint { grid-column:1/-1; color:rgba(239,231,218,.45); font-size:11px; }
+
 .studio-sheet {
   max-height: min(78vh, 680px);
   overflow-y: auto;
@@ -374,9 +394,21 @@ button {
   .brand-lockup { min-width:0; width:48px; padding:5px; }
   .brand-lockup > div:last-child { display:none; }
   .top-actions { max-width:calc(100vw - 70px); }
+  .top-actions > button { flex:0 0 auto !important; min-width:44px; }
+  .outline-toggle span { display:none; }
+  .outline-toggle { width:44px !important; padding-inline:0 !important; }
   .mobile-optional { display:none !important; }
   .view-strip { max-width:calc(100vw - 24px); overflow-x:auto; }
-  .view-strip > button:not(.colorway-dot) { padding:0 7px; }
+  .view-strip > button:not(.colorway-dot) { min-height:36px; padding:0 10px; }
+  .view-strip .colorway-dot { width:28px; height:28px; flex-basis:28px; }
+  .surface-fill-controls { grid-template-columns:1fr auto; gap:8px; }
+  .shape-size-grid { grid-template-columns:1fr; }
+  .brush-controls { grid-template-columns:1fr; }
+  .brush-size-presets { overflow-x:auto; }
+  .surface-fill-copy { grid-column:1/-1; }
+  .active-fabric-chip { min-height:40px; }
+  .choose-fabric-button { min-height:40px; }
+  .zoom-controls { right:8px !important; gap:6px !important; }
   .material-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .material-card { min-height: 76px; padding: 8px; }
   .material-swatch { width: 40px; height: 48px; flex-basis: 40px; }
