@@ -10,6 +10,9 @@ export default defineConfig({
   server: {
     port: 3000,
   },
+  preview: {
+    allowedHosts: ['edengarment-production.up.railway.app'],
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
