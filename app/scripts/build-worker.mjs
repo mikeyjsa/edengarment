@@ -2,6 +2,8 @@ import { cp, mkdir, readdir, writeFile } from 'node:fs/promises'
 
 const dist = new URL('../dist/', import.meta.url)
 const client = new URL('../dist/client/', import.meta.url)
+const hostingSource = new URL('../.openai/hosting.json', import.meta.url)
+const hostingTarget = new URL('../dist/.openai/hosting.json', import.meta.url)
 
 await mkdir(client, { recursive: true })
 for (const entry of await readdir(dist, { withFileTypes: true })) {
@@ -10,6 +12,8 @@ for (const entry of await readdir(dist, { withFileTypes: true })) {
 }
 
 await mkdir(new URL('../dist/server/', import.meta.url), { recursive: true })
+await mkdir(new URL('../dist/.openai/', import.meta.url), { recursive: true })
+await cp(hostingSource, hostingTarget)
 await writeFile(
   new URL('../dist/server/index.js', import.meta.url),
   `export default {
