@@ -1,0 +1,15 @@
+{
+  "name": "eden-velvet-railway",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "app"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace app",
+    "start": "npm run start --workspace app"
+  },
+  "engines": {
+    "node": "22.x"
+  }
+}
