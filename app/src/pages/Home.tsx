@@ -1220,7 +1220,7 @@ export default function Home() {
           <div className="studio-sheet w-full rounded-t-3xl p-5" onClick={(e)=>e.stopPropagation()}>
             <div className="sheet-header"><div><div className="sheet-title">PERFORMANCEWEAR BLOCKS</div><div className="sheet-subtitle">Editable starting shapes for dancewear and lingerie</div></div><button aria-label="Close components" style={iconBtn(false)} onClick={()=>setComponentsOpen(false)}><X size={18}/></button></div>
             <div className="component-grid">
-              {([['bodice','Bodice'],['corset','Corset'],['cups','Bra cups'],['straps','Straps'],['sleeves','Sleeves'],['brief','Brief'],['skirt','Skirt'],['fringe','Fringe belt'],['feathers','Feather bustle']] as Array<[GarmentTemplate,string]>).map(([id,label])=><button key={id} onClick={()=>addGarmentTemplate(id)}><span className="component-icon"><Scissors size={20}/></span><strong>{label}</strong><small>Add to {layers.find((layer)=>layer.id===activeLayerId)?.name}</small></button>)}
+              {([['bodice','Bodice'],['corset','Corset'],['cups','Bra cups'],['straps','Straps'],['sleeves','Sleeves'],['gloves','Long gloves'],['brief','Brief'],['stockings','Stockings'],['catsuit','Catsuit'],['skirt','Short skirt'],['longDress','Long dress'],['fringe','Fringe belt'],['feathers','Feather bustle']] as Array<[GarmentTemplate,string]>).map(([id,label])=><button key={id} onClick={()=>addGarmentTemplate(id)}><span className="component-icon"><Scissors size={20}/></span><strong>{label}</strong><small>Add to {layers.find((layer)=>layer.id===activeLayerId)?.name}</small></button>)}
             </div>
           </div>
         </div>

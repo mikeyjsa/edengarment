@@ -1017,7 +1017,20 @@ export class AtelierEngine {
       const coalesced=e.getCoalescedEvents?.()||[e]
       const stride=Math.max(1,Math.ceil(coalesced.length/4))
       const samples=coalesced.filter((_,index)=>index%stride===0||index===coalesced.length-1).slice(-4)
-      for(const sample of samples){const previous=this.stroke?.lastScreen,raw=new THREE.Vector2(sample.clientX,sample.clientY),distance=previous?.distanceTo(raw)??0,alpha=THREE.MathUtils.clamp(.3+distance/28,.3,.82),filtered=previous?previous.clone().lerp(raw,alpha):raw;this.stroke!.lastScreen=filtered;const hit=this.hitDrawingSurface(filtered.x,filtered.y);if(hit)this.extendStroke(hit)}
+      for(const sample of samples){
+        const previous=this.stroke?.lastScreen
+        const raw=new THREE.Vector2(sample.clientX,sample.clientY)
+        const distance=previous?.distanceTo(raw)??0
+        const alpha=THREE.MathUtils.clamp(.3+distance/28,.3,.82)
+        const filtered=previous?previous.clone().lerp(raw,alpha):raw
+        const steps=previous?Math.min(6,Math.max(1,Math.ceil(previous.distanceTo(filtered)/9))):1
+        for(let index=1;index<=steps;index++){
+          const screen=previous?previous.clone().lerp(filtered,index/steps):filtered
+          const hit=this.hitDrawingSurface(screen.x,screen.y)
+          if(hit)this.extendStroke(hit)
+        }
+        this.stroke!.lastScreen=filtered
+      }
     }
   }
 
@@ -1076,7 +1089,9 @@ export class AtelierEngine {
   // ---------------------------------------------------------- strokes
 
   private offsetPoint(p: THREE.Vector3, n: THREE.Vector3): THREE.Vector3 {
-    return p.clone().addScaledVector(n, this.strokeRadius() * 0.55 + 0.0015)
+    // Offset by more than the tube radius so the whole garment stroke stays
+    // above the skin instead of placing its centre on the skin and clipping.
+    return p.clone().addScaledVector(n, this.strokeRadius() * 1.45 + 0.004)
   }
 
   private mirrored(v: THREE.Vector3): THREE.Vector3 {
@@ -1167,7 +1182,8 @@ export class AtelierEngine {
       const last = st.points[st.points.length - 1]
       const distance=last?.distanceTo(pt)??0
       if (last && distance < minDist) return
-      if(last&&distance>minDist*2.4){const steps=Math.min(8,Math.floor(distance/(minDist*1.5)));for(let i=1;i<steps;i++)st.points.push(last.clone().lerp(pt,i/steps))}
+      // Do not add straight 3D chords between surface hits. Those shortcuts
+      // cut through curved areas such as the bust, hips, arms and legs.
       st.points.push(pt)
       // Refresh a cheap live preview at most once per animation frame. The
       // smooth tube is built only after the pencil is lifted.

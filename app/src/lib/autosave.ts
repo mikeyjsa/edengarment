@@ -8,6 +8,7 @@ const DRAWING_KEY = 'active-2d-drawing'
 const PROJECT_INDEX_KEY = 'saved-project-index'
 const ACTIVE_PROJECT_KEY = 'active-project-id'
 const PROJECT_PREFIX = 'saved-project:'
+const VAULT_KEY = 'eden-velvet-vault-id'
 
 export interface SavedProjectSummary {
   id: string
@@ -34,49 +35,7 @@ function openDatabase(): Promise<IDBDatabase> {
   })
 }
 
-export async function loadActiveDesign(): Promise<AtelierDesignState | null> {
-  const db = await openDatabase()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readonly')
-    const request = tx.objectStore(STORE).get(ACTIVE_KEY)
-    request.onsuccess = () => resolve((request.result as AtelierDesignState | undefined) ?? null)
-    request.onerror = () => reject(request.error)
-    tx.oncomplete = () => db.close()
-  })
-}
-
-export async function saveActiveDesign(state: AtelierDesignState): Promise<void> {
-  const db = await openDatabase()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readwrite')
-    tx.objectStore(STORE).put(state, ACTIVE_KEY)
-    tx.oncomplete = () => { db.close(); resolve() }
-    tx.onerror = () => { db.close(); reject(tx.error) }
-  })
-}
-
-export async function loadDrawing(): Promise<DrawingProject | DrawingAction[]> {
-  const db = await openDatabase()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readonly')
-    const request = tx.objectStore(STORE).get(DRAWING_KEY)
-    request.onsuccess = () => resolve((request.result as DrawingProject | DrawingAction[] | undefined) ?? [])
-    request.onerror = () => reject(request.error)
-    tx.oncomplete = () => db.close()
-  })
-}
-
-export async function saveDrawing(project: DrawingProject): Promise<void> {
-  const db = await openDatabase()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readwrite')
-    tx.objectStore(STORE).put(project, DRAWING_KEY)
-    tx.oncomplete = () => { db.close(); resolve() }
-    tx.onerror = () => { db.close(); reject(tx.error) }
-  })
-}
-
-async function readValue<T>(key: string): Promise<T | null> {
+async function readLocalValue<T>(key: string): Promise<T | null> {
   const db = await openDatabase()
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, 'readonly')
@@ -85,6 +44,124 @@ async function readValue<T>(key: string): Promise<T | null> {
     request.onerror = () => reject(request.error)
     tx.oncomplete = () => db.close()
   })
+}
+
+async function writeLocalValue<T>(key: string, value: T): Promise<void> {
+  const db = await openDatabase()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite')
+    tx.objectStore(STORE).put(value, key)
+    tx.oncomplete = () => { db.close(); resolve() }
+    tx.onerror = () => { db.close(); reject(tx.error) }
+  })
+}
+
+async function deleteLocalValue(key: string): Promise<void> {
+  const db = await openDatabase()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite')
+    tx.objectStore(STORE).delete(key)
+    tx.oncomplete = () => { db.close(); resolve() }
+    tx.onerror = () => { db.close(); reject(tx.error) }
+  })
+}
+
+function getVaultId(): string | null {
+  if (typeof window === 'undefined' || !window.localStorage) return null
+  let id = window.localStorage.getItem(VAULT_KEY)
+  if (!id) {
+    id = globalThis.crypto?.randomUUID?.().replaceAll('-', '') ||
+      `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`
+    window.localStorage.setItem(VAULT_KEY, id)
+  }
+  return id
+}
+
+type CloudRead<T> = { available: boolean; found: boolean; value: T | null }
+
+function cloudRequest(key: string, init?: RequestInit): Promise<Response> | null {
+  if (typeof window === 'undefined' || !/^https?:$/.test(window.location.protocol)) return null
+  const vaultId = getVaultId()
+  if (!vaultId) return null
+  return fetch(`/api/storage/${encodeURIComponent(key)}`, {
+    ...init,
+    headers: { 'X-Eden-Vault': vaultId, ...(init?.headers || {}) },
+  })
+}
+
+async function readCloudValue<T>(key: string): Promise<CloudRead<T>> {
+  try {
+    const request = cloudRequest(key, { method: 'GET', cache: 'no-store' })
+    if (!request) return { available: false, found: false, value: null }
+    const response = await request
+    if (!response.headers.get('content-type')?.includes('application/json')) {
+      return { available: false, found: false, value: null }
+    }
+    if (response.status === 404) return { available: true, found: false, value: null }
+    if (!response.ok) return { available: true, found: false, value: null }
+    return { available: true, found: true, value: await response.json() as T }
+  } catch {
+    return { available: false, found: false, value: null }
+  }
+}
+
+async function writeCloudValue<T>(key: string, value: T): Promise<boolean> {
+  try {
+    const request = cloudRequest(key, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(value),
+    })
+    return request ? (await request).ok : false
+  } catch {
+    return false
+  }
+}
+
+async function deleteCloudValue(key: string): Promise<boolean> {
+  try {
+    const request = cloudRequest(key, { method: 'DELETE' })
+    return request ? (await request).ok : false
+  } catch {
+    return false
+  }
+}
+
+async function readValue<T>(key: string): Promise<T | null> {
+  const cloud = await readCloudValue<T>(key)
+  if (cloud.found) {
+    await writeLocalValue(key, cloud.value)
+    return cloud.value
+  }
+  const local = await readLocalValue<T>(key)
+  if (local !== null && cloud.available) void writeCloudValue(key, local)
+  return local
+}
+
+async function writeValue<T>(key: string, value: T): Promise<void> {
+  await writeLocalValue(key, value)
+  await writeCloudValue(key, value)
+}
+
+async function deleteValue(key: string): Promise<void> {
+  await deleteLocalValue(key)
+  await deleteCloudValue(key)
+}
+
+export async function loadActiveDesign(): Promise<AtelierDesignState | null> {
+  return readValue<AtelierDesignState>(ACTIVE_KEY)
+}
+
+export async function saveActiveDesign(state: AtelierDesignState): Promise<void> {
+  return writeValue(ACTIVE_KEY, state)
+}
+
+export async function loadDrawing(): Promise<DrawingProject | DrawingAction[]> {
+  return (await readValue<DrawingProject | DrawingAction[]>(DRAWING_KEY)) ?? []
+}
+
+export async function saveDrawing(project: DrawingProject): Promise<void> {
+  return writeValue(DRAWING_KEY, project)
 }
 
 export async function listSavedProjects(): Promise<SavedProjectSummary[]> {
@@ -100,14 +177,8 @@ export async function loadActiveProjectId(): Promise<string | null> {
 }
 
 export async function setActiveProjectId(id: string | null): Promise<void> {
-  const db = await openDatabase()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readwrite')
-    if (id) tx.objectStore(STORE).put(id, ACTIVE_PROJECT_KEY)
-    else tx.objectStore(STORE).delete(ACTIVE_PROJECT_KEY)
-    tx.oncomplete = () => { db.close(); resolve() }
-    tx.onerror = () => { db.close(); reject(tx.error) }
-  })
+  if (id) await writeValue(ACTIVE_PROJECT_KEY, id)
+  else await deleteValue(ACTIVE_PROJECT_KEY)
 }
 
 export async function saveNamedProject(
@@ -132,29 +203,19 @@ export async function saveNamedProject(
   const index = await listSavedProjects()
   const summary: SavedProjectSummary = { id, name: project.name, createdAt: project.createdAt, updatedAt: now }
   const nextIndex = [summary, ...index.filter((item) => item.id !== id)]
-  const db = await openDatabase()
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readwrite')
-    const store = tx.objectStore(STORE)
-    store.put(project, `${PROJECT_PREFIX}${id}`)
-    store.put(nextIndex, PROJECT_INDEX_KEY)
-    tx.oncomplete = () => { db.close(); resolve() }
-    tx.onerror = () => { db.close(); reject(tx.error) }
-  })
+  await Promise.all([
+    writeValue(`${PROJECT_PREFIX}${id}`, project),
+    writeValue(PROJECT_INDEX_KEY, nextIndex),
+  ])
   return project
 }
 
 export async function deleteSavedProject(id: string): Promise<void> {
   const index = await listSavedProjects()
-  const db = await openDatabase()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readwrite')
-    const store = tx.objectStore(STORE)
-    store.delete(`${PROJECT_PREFIX}${id}`)
-    store.put(index.filter((item) => item.id !== id), PROJECT_INDEX_KEY)
-    tx.oncomplete = () => { db.close(); resolve() }
-    tx.onerror = () => { db.close(); reject(tx.error) }
-  })
+  await Promise.all([
+    deleteValue(`${PROJECT_PREFIX}${id}`),
+    writeValue(PROJECT_INDEX_KEY, index.filter((item) => item.id !== id)),
+  ])
 }
 
 export function isSavedAtelierProject(value: unknown): value is SavedAtelierProject {

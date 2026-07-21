@@ -3,7 +3,7 @@ import type { DrawingPlaneAnchor, FabricPreset, ShapeKind, StoneShape, Tool } fr
 
 export type DrawingViewId = 'front' | 'back' | 'left' | 'right'
 export type CoverageMode = 'dance' | 'lingerie' | 'competition'
-export type GarmentTemplate = 'bodice' | 'corset' | 'brief' | 'skirt' | 'cups' | 'sleeves' | 'straps' | 'fringe' | 'feathers'
+export type GarmentTemplate = 'bodice' | 'corset' | 'brief' | 'skirt' | 'longDress' | 'cups' | 'sleeves' | 'gloves' | 'stockings' | 'catsuit' | 'straps' | 'fringe' | 'feathers'
 export type Point = { x: number; y: number; pressure: number }
 export interface DrawingPlaneSnapshot { id: string; image: string; anchor: DrawingPlaneAnchor; actions: DrawingAction[]; view: DrawingViewId; depth: number }
 
@@ -228,8 +228,12 @@ function templateActions(template: GarmentTemplate, layerId: string, color: stri
   if (template === 'corset') return [closed([[.37,.31],[.63,.31],[.61,.62],[.55,.69],[.45,.69],[.39,.62]])]
   if (template === 'brief') return [closed([[.38,.60],[.62,.60],[.58,.75],[.5,.82],[.42,.75]])]
   if (template === 'skirt') return [closed([[.39,.58],[.61,.58],[.72,.86],[.28,.86]])]
+  if (template === 'longDress') return [closed([[.39,.57],[.61,.57],[.73,.96],[.27,.96]])]
   if (template === 'cups') return [closed([[.39,.38],[.5,.32],[.5,.48],[.39,.48]], true)]
   if (template === 'sleeves') return [closed([[.37,.29],[.28,.31],[.23,.56],[.31,.57],[.39,.39]], true)]
+  if (template === 'gloves') return [closed([[.31,.45],[.25,.45],[.2,.78],[.27,.78]], true)]
+  if (template === 'stockings') return [closed([[.42,.67],[.49,.67],[.47,.96],[.39,.96]], true)]
+  if (template === 'catsuit') return [closed([[.39,.28],[.61,.28],[.61,.61],[.55,.67],[.53,.96],[.47,.96],[.45,.67],[.39,.61]])]
   if (template === 'straps') return [closed([[.4,.28],[.43,.27],[.47,.12],[.44,.12]], true)]
   if (template === 'fringe') return Array.from({ length: 11 }, (_, i) => ({ id: uid(), layerId, kind: 'stroke' as const, mode: 'pencil' as const, color, size: Math.max(1.5, size * .55), mirror: false, closed: false, points: [pt(.36 + i * .028,.61), pt(.35 + i * .03,.78 + (i % 2) * .03)] }))
   return Array.from({ length: 9 }, (_, i) => ({ id: uid(), layerId, kind: 'stroke' as const, mode: 'pencil' as const, color, size: Math.max(2, size), mirror: false, closed: false, points: [pt(.39 + i * .028,.61), pt(.32 + i * .045,.74), pt(.36 + i * .035,.83)] }))
