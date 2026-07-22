@@ -5,7 +5,7 @@ export type DrawingViewId = 'front' | 'back' | 'left' | 'right'
 export type CoverageMode = 'dance' | 'lingerie' | 'competition'
 export type GarmentTemplate = 'bodice' | 'corset' | 'brief' | 'skirt' | 'longDress' | 'cups' | 'sleeves' | 'gloves' | 'stockings' | 'catsuit' | 'straps' | 'fringe' | 'feathers'
 export type Point = { x: number; y: number; pressure: number }
-export interface DrawingPlaneSnapshot { id: string; image: string; anchor: DrawingPlaneAnchor; actions: DrawingAction[]; view: DrawingViewId; depth: number }
+export interface DrawingPlaneSnapshot { id: string; name?: string; image: string; anchor: DrawingPlaneAnchor; actions: DrawingAction[]; view: DrawingViewId; depth: number }
 
 export interface LayerDefinition {
   id: string
@@ -17,7 +17,7 @@ export interface LayerDefinition {
 
 type Base = { id: string; layerId?: string }
 export type DrawingAction =
-  | (Base & { kind: 'stroke'; mode: 'pencil' | 'spray' | 'eraser'; color: string; size: number; mirror: boolean; closed: boolean; points: Point[] })
+  | (Base & { kind: 'stroke'; mode: 'pencil' | 'brush' | 'spray' | 'eraser'; color: string; size: number; sizeCm?: number; mirror: boolean; closed: boolean; points: Point[] })
   | (Base & { kind: 'shape'; shape: ShapeKind; color: string; size: number; mirror: boolean; start: Point; end: Point })
   | (Base & { kind: 'stones'; shape: StoneShape; color: string; size: number; count: number; mirror: boolean; points: Point[] })
   | (Base & { kind: 'fill'; targetId: string; color: string; material: FabricPreset; scale?: number; rotation?: number })
@@ -37,6 +37,7 @@ export interface DrawingProject {
   activePlaneId?: string
   activePlaneAnchor?: DrawingPlaneAnchor | null
   activePlaneDepth?: number
+  activePlaneName?: string
 }
 
 export interface DrawingCanvasHandle {
@@ -58,8 +59,11 @@ interface Props {
   tool: Tool
   color: string
   thickness: number
+  brushSizeCm: number
   mirror: boolean
   shapeKind: ShapeKind
+  shapeWidthCm: number
+  shapeHeightCm: number
   stoneShape: StoneShape
   stoneSize: number
   stoneCount: number
@@ -69,6 +73,7 @@ interface Props {
   mapPoint?: (clientX: number, clientY: number) => { x: number; y: number } | null
   onSurfaceChange?: () => void
   passthrough3D: boolean
+  snapEnabled: boolean
   activeLayerId: string
   layers: LayerDefinition[]
   pencilOnly: boolean
@@ -216,6 +221,13 @@ function bounds(action: DrawingAction) {
   return { minX: Math.min(...points.map((p) => p.x)), maxX: Math.max(...points.map((p) => p.x)), minY: Math.min(...points.map((p) => p.y)), maxY: Math.max(...points.map((p) => p.y)) }
 }
 
+function closestPointOnSegment(point: Point, start: Point, end: Point): Point {
+  const dx=end.x-start.x,dy=end.y-start.y,length=dx*dx+dy*dy
+  if(length<1e-9)return{...start}
+  const t=Math.max(0,Math.min(1,((point.x-start.x)*dx+(point.y-start.y)*dy)/length))
+  return{x:start.x+dx*t,y:start.y+dy*t,pressure:point.pressure}
+}
+
 function mapAction(action: DrawingAction, transform: (point: Point) => Point): DrawingAction {
   if (action.kind === 'stroke' || action.kind === 'stones') return { ...action, points: action.points.map(transform) }
   if (action.kind === 'shape' || action.kind === 'measure') return { ...action, start: transform(action.start), end: transform(action.end) }
@@ -284,7 +296,9 @@ export const DrawingCanvas = forwardRef<DrawingCanvasHandle, Props>(function Dra
             const path = pathFor(action,w,h,mirrored), fill = fills.get(action.id)
             if (action.closed && fill) { ctx.save(); ctx.globalAlpha *= fill.material === 'mesh' ? .48 : fill.material === 'lace' ? .82 : .9; ctx.fillStyle = materialFill(ctx,fill.material||'matte',fill.color,w,h,fill.scale,fill.rotation); ctx.fill(path); ctx.restore() }
             ctx.globalCompositeOperation = action.mode === 'eraser' ? 'destination-out' : 'source-over'; ctx.strokeStyle = action.mode === 'eraser' ? '#000' : action.color
-            const pressure = action.points.reduce((sum,p)=>sum+p.pressure,0)/Math.max(1,action.points.length); ctx.lineWidth = action.size*(.7+pressure*.65)*(action.mode==='eraser'?2.2:1)
+            const pressure = action.points.reduce((sum,p)=>sum+p.pressure,0)/Math.max(1,action.points.length)
+            const brushWidth = action.mode==='brush'&&action.sizeCm ? action.sizeCm*h/(props.heightCm*1.25) : action.size
+            ctx.lineWidth = brushWidth*(.7+pressure*.65)*(action.mode==='eraser'?2.2:1)
             if (action.mode === 'spray') for (const p of action.points) for (let i=0;i<7;i++) { const px=(mirrored?1-p.x:p.x)*w,py=p.y*h,ang=i*2.399+p.x*31,dist=i/7*action.size*2.4; ctx.beginPath();ctx.arc(px+Math.cos(ang)*dist,py+Math.sin(ang)*dist,Math.max(1,action.size*.22),0,Math.PI*2);ctx.fillStyle=action.color;ctx.globalAlpha=.24*layer.opacity;ctx.fill() } else ctx.stroke(path)
           }
         } else if (action.kind === 'shape') {
@@ -351,6 +365,20 @@ export const DrawingCanvas = forwardRef<DrawingCanvasHandle, Props>(function Dra
   }))
 
   const pointFrom=(event:React.PointerEvent<HTMLCanvasElement>):Point|null=>{const mapped=props.mapPoint?.(event.clientX,event.clientY);if(props.mapPoint&&!mapped)return null;if(mapped)return{x:clamp(mapped.x),y:clamp(mapped.y),pressure:event.pointerType==='pen'?Math.max(.2,event.pressure):.65};const rect=event.currentTarget.getBoundingClientRect();return{x:clamp((event.clientX-rect.left)/rect.width),y:clamp((event.clientY-rect.top)/rect.height),pressure:event.pointerType==='pen'?Math.max(.2,event.pressure):.65}}
+  const snapPoint=(point:Point):Point=>{
+    if(!props.snapEnabled)return point
+    const{w,h}=sizeRef.current,limit=18
+    let best=point,bestDistance=limit
+    for(const action of actionsRef.current){
+      if(action.kind!=='stroke'&&action.kind!=='shape')continue
+      const points=action.kind==='stroke'?action.points:[action.start,{x:action.end.x,y:action.start.y,pressure:.65},action.end,{x:action.start.x,y:action.end.y,pressure:.65},action.start]
+      for(let index=0;index<points.length-1;index++){
+        const candidate=closestPointOnSegment(point,points[index],points[index+1]),distance=Math.hypot((candidate.x-point.x)*w,(candidate.y-point.y)*h)
+        if(distance<bestDistance){bestDistance=distance;best=candidate}
+      }
+    }
+    return best
+  }
   const onPointerDown=(event:React.PointerEvent<HTMLCanvasElement>)=>{
     if(props.tool==='move'||(props.pencilOnly&&event.pointerType!=='pen'&&props.tool!=='select'))return
     const point=pointFrom(event);if(!point)return;event.preventDefault();event.currentTarget.setPointerCapture(event.pointerId);const layer=props.layers.find((item)=>item.id===props.activeLayerId);if(layer?.locked)return
@@ -374,14 +402,20 @@ export const DrawingCanvas = forwardRef<DrawingCanvasHandle, Props>(function Dra
       if(areaImage){const id=uid(),image=new Image();image.src=areaImage;rasterImagesRef.current.set(id,image);publish([...actionsRef.current,{id,layerId:props.activeLayerId,kind:'area-fill',image:areaImage}])}
       return
     }
-    if(props.tool==='shape')activeRef.current={id:uid(),layerId:props.activeLayerId,kind:'shape',shape:props.shapeKind,color:props.color,size:Math.max(2,props.thickness),mirror:props.mirror,start:point,end:point}
+    if(props.tool==='shape'){
+      const{w,h}=sizeRef.current,widthNorm=props.shapeWidthCm*h/(props.heightCm*1.25*w),heightCm=props.shapeKind==='rectangle'?props.shapeHeightCm:props.shapeWidthCm,heightNorm=heightCm/(props.heightCm*1.25)
+      activeRef.current={id:uid(),layerId:props.activeLayerId,kind:'shape',shape:props.shapeKind,color:props.color,size:Math.max(2,props.thickness),mirror:props.mirror,start:{...point,x:clamp(point.x-widthNorm/2),y:clamp(point.y-heightNorm/2)},end:{...point,x:clamp(point.x+widthNorm/2),y:clamp(point.y+heightNorm/2)}}
+    }
     else if(props.tool==='stone')activeRef.current={id:uid(),layerId:props.activeLayerId,kind:'stones',shape:props.stoneShape,color:props.color,size:props.stoneSize,count:props.stoneCount,mirror:props.mirror,points:[point]}
     else if(props.tool==='measure')activeRef.current={id:uid(),layerId:props.activeLayerId,kind:'measure',color:'#c9a96a',start:point,end:point}
-    else if(props.tool==='pencil'||props.tool==='spray'||props.tool==='eraser')activeRef.current={id:uid(),layerId:props.activeLayerId,kind:'stroke',mode:props.tool,color:props.color,size:Math.max(2,props.thickness*1.35),mirror:props.mirror,closed:false,points:[point]}
+    else if(props.tool==='pencil'||props.tool==='brush'||props.tool==='spray'||props.tool==='eraser'){
+      const start=props.tool==='pencil'?snapPoint(point):point
+      activeRef.current={id:uid(),layerId:props.activeLayerId,kind:'stroke',mode:props.tool,color:props.color,size:Math.max(2,props.thickness*1.35),sizeCm:props.tool==='brush'?props.brushSizeCm:undefined,mirror:props.mirror,closed:false,points:[start]}
+    }
     render()
   }
-  const onPointerMove=(event:React.PointerEvent<HTMLCanvasElement>)=>{const point=pointFrom(event);if(!point)return;if(props.tool==='select'&&selectedRef.current&&dragRef.current){const last=dragRef.current,dx=point.x-last.x,dy=point.y-last.y;dragRef.current=point;dragChangedRef.current=true;const id=selectedRef.current;actionsRef.current=actionsRef.current.map((action)=>action.id===id?mapAction(action,(p)=>({...p,x:clamp(p.x+dx),y:clamp(p.y+dy)})):action);render();return}const active=activeRef.current;if(!active||!event.currentTarget.hasPointerCapture(event.pointerId))return;event.preventDefault();if(active.kind==='shape'||active.kind==='measure')active.end=point;else if(active.kind==='stroke'||active.kind==='stones'){const last=active.points.at(-1)!,{w,h}=sizeRef.current,spacing=active.kind==='stones'?Math.max(12,active.size*3.2):2.5,maxPoints=active.kind==='stones'?Math.max(1,Math.floor(720/(active.count*(active.mirror?2:1)))):Infinity;if(active.points.length<maxPoints&&Math.hypot((point.x-last.x)*w,(point.y-last.y)*h)>=spacing)active.points.push(point)}render()}
+  const onPointerMove=(event:React.PointerEvent<HTMLCanvasElement>)=>{let point=pointFrom(event);if(!point)return;if(props.tool==='select'&&selectedRef.current&&dragRef.current){const last=dragRef.current,dx=point.x-last.x,dy=point.y-last.y;dragRef.current=point;dragChangedRef.current=true;const id=selectedRef.current;actionsRef.current=actionsRef.current.map((action)=>action.id===id?mapAction(action,(p)=>({...p,x:clamp(p.x+dx),y:clamp(p.y+dy)})):action);render();return}const active=activeRef.current;if(!active||!event.currentTarget.hasPointerCapture(event.pointerId))return;event.preventDefault();if(active.kind==='measure')active.end=point;else if(active.kind==='stroke'||active.kind==='stones'){if(active.kind==='stroke'&&active.mode==='pencil')point=snapPoint(point);const last=active.points.at(-1)!,{w,h}=sizeRef.current,spacing=active.kind==='stones'?Math.max(12,active.size*3.2):active.kind==='stroke'&&active.mode==='brush'?Math.max(2.5,(active.sizeCm||props.brushSizeCm)*.35):2.5,maxPoints=active.kind==='stones'?Math.max(1,Math.floor(720/(active.count*(active.mirror?2:1)))):Infinity;if(active.points.length<maxPoints&&Math.hypot((point.x-last.x)*w,(point.y-last.y)*h)>=spacing)active.points.push(point)}render()}
   const onPointerUp=(event:React.PointerEvent<HTMLCanvasElement>)=>{const movedSelection=dragChangedRef.current;dragRef.current=null;dragChangedRef.current=false;if(movedSelection){redoRef.current=[];props.onChange(actionsRef.current);try{event.currentTarget.releasePointerCapture(event.pointerId)}catch{/* released */}return}const active=activeRef.current;if(!active)return;if(active.kind==='stroke'&&active.mode==='pencil'&&active.points.length>5){const first=active.points[0],last=active.points.at(-1)!,{w,h}=sizeRef.current;const closeRadius=Math.max(40,Math.min(w,h)*.055,active.size*4);if(Math.hypot((last.x-first.x)*w,(last.y-first.y)*h)<=closeRadius){active.closed=true;active.points[active.points.length-1]={...first}}}commit(active);try{event.currentTarget.releasePointerCapture(event.pointerId)}catch{/* released */}}
 
-  return <canvas ref={canvasRef} aria-label="3D garment drawing surface" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} style={{position:'absolute',inset:0,zIndex:2,touchAction:'none',pointerEvents:props.tool==='move'||props.passthrough3D?'none':'auto',opacity:0}} />
+  return <canvas ref={canvasRef} aria-label="Editable 2D garment canvas" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} style={{position:'absolute',inset:0,zIndex:2,touchAction:'none',pointerEvents:props.tool==='move'||props.passthrough3D?'none':'auto',opacity:0}} />
 })

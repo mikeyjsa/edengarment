@@ -117,19 +117,19 @@ const TOOLS: Array<{ id: Tool; label: string; icon: typeof Pencil }> = [
   { id: 'measure', label: 'Measure', icon: Ruler },
   { id: 'select', label: 'Select', icon: MousePointer2 },
 ]
-const SURFACE_3D_TOOLS = new Set<Tool>(['move','pencil','brush','spray','fill','stone','shape','eraser'])
+const SURFACE_3D_TOOLS = new Set<Tool>(['move'])
 
 const TOOL_HINTS: Record<Tool, string> = {
-  pencil: '3D surface drawing · Snap joins nearby lines and closes fillable outlines',
-  brush: 'Solid 3D paintbrush · choose a broad size and paint directly over the mannequin surface',
-  spray: 'Soft 3D airbrush that follows the visible mannequin surface',
-  fill: 'Tap inside a closed 3D outline · fabric wraps to the body contours and drapes outside the silhouette',
+  pencil: 'Editable 2D line · snaps to nearby lines and stays on this canvas in 3D space',
+  brush: 'Solid 2D paintbrush · choose a broad size and paint on the active canvas',
+  spray: 'Soft 2D airbrush on the active canvas',
+  fill: 'Tap inside closed 2D lines on the active canvas · the mannequin is never filled',
   stone: 'Paint on stones using the shape, size and batch count below',
-  shape: 'Tap the mannequin to place a closed surface shape; use Fill inside it',
+  shape: 'Tap the canvas to place a precisely sized closed shape; use Fill inside it',
   measure: 'Drag between two points to add a saved measurement',
   select: 'Tap an item to move, resize, rotate, duplicate or delete it',
   eraser: 'Tap or drag over a stroke to remove it',
-  move: 'Drag around, over or under · full upside-down tumble · pinch and double-tap zoom',
+  move: 'Rotate to any angle, then choose a drawing tool to start a new anchored 2D canvas',
 }
 
 /** nice cm step so major ruler ticks stay at least ~55px apart */
@@ -310,6 +310,7 @@ export default function Home() {
   const [activePlaneId, setActivePlaneId] = useState<string>('front')
   const [activePlaneAnchor, setActivePlaneAnchor] = useState<DrawingPlaneAnchor | null>(null)
   const [activePlaneDepth, setActivePlaneDepth] = useState(0)
+  const [activePlaneName, setActivePlaneName] = useState('Front Canvas')
   const [anchoredPlanes, setAnchoredPlanes] = useState<DrawingPlaneSnapshot[]>([])
   const [projectsOpen, setProjectsOpen] = useState(false)
   const [savedProjects, setSavedProjects] = useState<SavedProjectSummary[]>([])
@@ -366,7 +367,8 @@ export default function Home() {
         setActivePlaneId(saved.activePlaneId || 'front')
         setActivePlaneAnchor(saved.activePlaneAnchor ? straightenDrawingPlaneAnchor(saved.activePlaneAnchor) : null)
         setActivePlaneDepth(saved.activePlaneDepth || 0)
-        setAnchoredPlanes((saved.anchoredPlanes || []).map((plane)=>({...plane,anchor:straightenDrawingPlaneAnchor(plane.anchor),actions:plane.actions||[],view:plane.view||'front',depth:plane.depth||0})))
+        setActivePlaneName(saved.activePlaneName || `${(saved.activeView || 'front').replace(/^./,(letter)=>letter.toUpperCase())} Canvas`)
+        setAnchoredPlanes((saved.anchoredPlanes || []).map((plane,index)=>({...plane,name:plane.name||`Canvas ${index+1}`,anchor:straightenDrawingPlaneAnchor(plane.anchor),actions:plane.actions||[],view:plane.view||'front',depth:plane.depth||0})))
         setStrokes(saved.views.front.length)
       }
       setDrawingReady(true)
@@ -438,7 +440,7 @@ export default function Home() {
     engineRef.current?.setViewPreset(activeView)
   }, [activeView])
 
-  useEffect(()=>{engineRef.current?.setDrawingPlaneHighlight(layersOpen?previewPlaneId:null);return()=>engineRef.current?.setDrawingPlaneHighlight(null)},[layersOpen,previewPlaneId])
+  useEffect(()=>{engineRef.current?.setDrawingPlaneHighlight(layersOpen?previewPlaneId:tool!=='move'?activePlaneId:null);return()=>engineRef.current?.setDrawingPlaneHighlight(null)},[layersOpen,previewPlaneId,tool,activePlaneId])
 
   useEffect(() => {
     const onInstall = (event: Event) => {
@@ -465,7 +467,7 @@ export default function Home() {
   ) {
     setSaveStatus('saving')
     if (drawingSaveTimer.current) window.clearTimeout(drawingSaveTimer.current)
-    const project: DrawingProject = { version: 2, views, activeView, layers: nextLayers, activeLayerId, pencilOnly, coverageMode, showCoverage, anchoredPlanes, activePlaneId, activePlaneAnchor, activePlaneDepth, ...overrides }
+    const project: DrawingProject = { version: 2, views, activeView, layers: nextLayers, activeLayerId, pencilOnly, coverageMode, showCoverage, anchoredPlanes, activePlaneId, activePlaneAnchor, activePlaneDepth, activePlaneName, ...overrides }
     drawingSaveTimer.current = window.setTimeout(() => void saveDrawing(project).then(() => setSaveStatus('saved')), 300)
   }
 
@@ -498,18 +500,37 @@ export default function Home() {
 
   function switchView(view: DrawingViewId) {
     let nextViews=drawingViews,nextPlanes=anchoredPlanes
-    if(activePlaneId.startsWith('angle-')&&drawingViews[activeView].length){const image=drawingRef.current?.capture(),anchor=engineRef.current?.getDrawingPlaneAnchor(activePlaneId)||activePlaneAnchor;if(image&&anchor){const archiveId=`saved-${Date.now().toString(36)}`;nextPlanes=[...anchoredPlanes,{id:archiveId,image,anchor,actions:structuredClone(drawingViews[activeView]),view:activeView,depth:activePlaneDepth}];nextViews={...drawingViews,[activeView]:[]};engineRef.current?.setDrawingViewTexture(archiveId,image,anchor);engineRef.current?.removeDrawingPlane(activePlaneId);setAnchoredPlanes(nextPlanes);setDrawingViews(nextViews)}}else syncViewTo3D()
+    if(activePlaneId.startsWith('angle-')&&drawingViews[activeView].length){const image=drawingRef.current?.capture(),anchor=engineRef.current?.getDrawingPlaneAnchor(activePlaneId)||activePlaneAnchor;if(image&&anchor){const archiveId=`saved-${Date.now().toString(36)}`;nextPlanes=[...anchoredPlanes,{id:archiveId,name:activePlaneName,image,anchor,actions:structuredClone(drawingViews[activeView]),view:activeView,depth:activePlaneDepth}];nextViews={...drawingViews,[activeView]:[]};engineRef.current?.setDrawingViewTexture(archiveId,image,anchor);engineRef.current?.removeDrawingPlane(activePlaneId);setAnchoredPlanes(nextPlanes);setDrawingViews(nextViews)}}else syncViewTo3D()
     setActiveView(view)
     setActivePlaneId(view)
     setActivePlaneAnchor(null)
     setActivePlaneDepth(0)
+    const nextName=`${view.replace(/^./,(letter)=>letter.toUpperCase())} Canvas`;setActivePlaneName(nextName)
     setStrokes(nextViews[view].length)
     setSelectedDrawing(false)
-    scheduleDrawingSave(nextViews,layers,{anchoredPlanes:nextPlanes,activePlaneId:view,activePlaneAnchor:null,activePlaneDepth:0})
+    scheduleDrawingSave(nextViews,layers,{anchoredPlanes:nextPlanes,activePlaneId:view,activePlaneAnchor:null,activePlaneDepth:0,activePlaneName:nextName})
   }
 
   function chooseTool(nextTool: Tool) {
+    const engine=engineRef.current
+    if(nextTool!=='move'&&engine?.getDrawingPlaneAnchor(activePlaneId)&&!engine.isDrawingPlaneAligned(activePlaneId)){
+      createNewDrawingCanvas(nextTool)
+      return
+    }
     setTool(nextTool)
+  }
+
+  function createNewDrawingCanvas(nextTool:Tool='pencil') {
+    const engine=engineRef.current
+    if(!engine)return
+    const image=drawingRef.current?.capture(),anchor=engine.getDrawingPlaneAnchor(activePlaneId)||activePlaneAnchor,actions=drawingViews[activeView]
+    let nextPlanes=anchoredPlanes
+    if(image&&anchor&&actions.length){const archiveId=`saved-${Date.now().toString(36)}`;nextPlanes=[...nextPlanes,{id:archiveId,name:activePlaneName,image,anchor,actions:structuredClone(actions),view:activeView,depth:activePlaneDepth}];engine.setDrawingViewTexture(archiveId,image,anchor)}
+    engine.removeDrawingPlane(activePlaneId)
+    const id=`angle-${Date.now().toString(36)}`,newAnchor=engine.createCurrentDrawingAnchor(),name=`Canvas ${nextPlanes.length+1}`,nextViews={...drawingViews,[activeView]:[]}
+    setAnchoredPlanes(nextPlanes);setDrawingViews(nextViews);setActivePlaneId(id);setActivePlaneAnchor(newAnchor);setActivePlaneDepth(0);setActivePlaneName(name);setStrokes(0);setSelectedDrawing(false);setTool(nextTool);setLayersOpen(false)
+    window.requestAnimationFrame(()=>window.requestAnimationFrame(()=>{const surface=drawingRef.current?.getSurface();if(surface){engine.setLiveDrawingView(id,surface,newAnchor);engine.setDrawingPlaneHighlight(id)}}))
+    scheduleDrawingSave(nextViews,layers,{anchoredPlanes:nextPlanes,activePlaneId:id,activePlaneAnchor:newAnchor,activePlaneDepth:0,activePlaneName:name})
   }
 
   function setPlaneDepth(id: string, nextDepth: number) {
@@ -539,7 +560,7 @@ export default function Home() {
     let nextPlanes = anchoredPlanes.filter((item) => item.id !== plane.id)
     if (currentImage && currentAnchor && currentActions.length && activePlaneId !== plane.id) {
       const currentId = `saved-${Date.now().toString(36)}`
-      nextPlanes = [...nextPlanes, { id: currentId, image: currentImage, anchor: currentAnchor, actions: structuredClone(currentActions), view: activeView, depth: activePlaneDepth }]
+      nextPlanes = [...nextPlanes, { id: currentId, name: activePlaneName, image: currentImage, anchor: currentAnchor, actions: structuredClone(currentActions), view: activeView, depth: activePlaneDepth }]
       engineRef.current?.setDrawingViewTexture(currentId, currentImage, currentAnchor)
       engineRef.current?.removeDrawingPlane(activePlaneId)
     }
@@ -550,12 +571,13 @@ export default function Home() {
     setActivePlaneId(plane.id)
     setActivePlaneAnchor(plane.anchor)
     setActivePlaneDepth(plane.depth)
+    setActivePlaneName(plane.name||'Canvas')
     setStrokes(plane.actions.length)
     setSelectedDrawing(false)
-    setTool('move')
+    setTool('pencil')
     window.requestAnimationFrame(()=>engineRef.current?.focusDrawingPlane(plane.id))
     setLayersOpen(false)
-    scheduleDrawingSave(nextViews, layers, { anchoredPlanes: nextPlanes, activePlaneId: plane.id, activePlaneAnchor: plane.anchor, activePlaneDepth: plane.depth })
+    scheduleDrawingSave(nextViews, layers, { anchoredPlanes: nextPlanes, activePlaneId: plane.id, activePlaneAnchor: plane.anchor, activePlaneDepth: plane.depth, activePlaneName: plane.name||'Canvas' })
   }
 
   function updateLayers(next: LayerDefinition[]) {
@@ -570,7 +592,7 @@ export default function Home() {
 
   function currentDrawingProject(): DrawingProject {
     const anchor = engineRef.current?.getDrawingPlaneAnchor(activePlaneId) || activePlaneAnchor
-    return { version: 2, views: drawingViews, activeView, layers, activeLayerId, pencilOnly, coverageMode, showCoverage, anchoredPlanes, activePlaneId, activePlaneAnchor: anchor, activePlaneDepth }
+    return { version: 2, views: drawingViews, activeView, layers, activeLayerId, pencilOnly, coverageMode, showCoverage, anchoredPlanes, activePlaneId, activePlaneAnchor: anchor, activePlaneDepth, activePlaneName }
   }
 
   async function saveWorkingCopy() {
@@ -634,7 +656,7 @@ export default function Home() {
 
   function applyDrawingProject(project: DrawingProject) {
     const nextView = project.activeView || 'front'
-    const nextPlanes = (project.anchoredPlanes || []).map((plane) => ({ ...plane, anchor: straightenDrawingPlaneAnchor(plane.anchor), actions: plane.actions || [], view: plane.view || 'front', depth: plane.depth || 0 }))
+    const nextPlanes = (project.anchoredPlanes || []).map((plane,index) => ({ ...plane, name:plane.name||`Canvas ${index+1}`, anchor: straightenDrawingPlaneAnchor(plane.anchor), actions: plane.actions || [], view: plane.view || 'front', depth: plane.depth || 0 }))
     engineRef.current?.clearDrawingPlanes()
     setDrawingViews(project.views)
     setActiveView(nextView)
@@ -646,6 +668,7 @@ export default function Home() {
     setActivePlaneId(project.activePlaneId || nextView)
     setActivePlaneAnchor(project.activePlaneAnchor ? straightenDrawingPlaneAnchor(project.activePlaneAnchor) : null)
     setActivePlaneDepth(project.activePlaneDepth || 0)
+    setActivePlaneName(project.activePlaneName||`${nextView.replace(/^./,(letter)=>letter.toUpperCase())} Canvas`)
     setAnchoredPlanes(nextPlanes)
     setStrokes(project.views[nextView]?.length || 0)
     setSelectedDrawing(false)
@@ -746,10 +769,10 @@ export default function Home() {
     if(drawingSaveTimer.current)window.clearTimeout(drawingSaveTimer.current)
     const views:Record<DrawingViewId,DrawingAction[]>={front:[],back:[],left:[],right:[]},engine=engineRef.current
     engine?.clearDrawingPlanes();engine?.clearAll();engine?.resetFabric();engine?.setViewPreset('front')
-    setDrawingViews(views);setAnchoredPlanes([]);setActiveView('front');setActivePlaneId('front');setActivePlaneAnchor(null);setActivePlaneDepth(0);setStrokes(0);setSelectedDrawing(false);setTool('move');setFabric('matte');setActiveProjectId(null);setProjectName('Untitled Design')
+    setDrawingViews(views);setAnchoredPlanes([]);setActiveView('front');setActivePlaneId('front');setActivePlaneAnchor(null);setActivePlaneDepth(0);setActivePlaneName('Front Canvas');setStrokes(0);setSelectedDrawing(false);setTool('move');setFabric('matte');setActiveProjectId(null);setProjectName('Untitled Design')
     await persistActiveProjectId(null)
     setSaveStatus('saving')
-    const project:DrawingProject={version:2,views,activeView:'front',layers,activeLayerId,pencilOnly,coverageMode,showCoverage,anchoredPlanes:[],activePlaneId:'front',activePlaneAnchor:null,activePlaneDepth:0}
+    const project:DrawingProject={version:2,views,activeView:'front',layers,activeLayerId,pencilOnly,coverageMode,showCoverage,anchoredPlanes:[],activePlaneId:'front',activePlaneAnchor:null,activePlaneDepth:0,activePlaneName:'Front Canvas'}
     if(engine)await Promise.all([saveDrawing(project),saveActiveDesign(engine.exportState())]);else await saveDrawing(project)
     window.requestAnimationFrame(()=>{const surface=drawingRef.current?.getSurface();if(surface)engineRef.current?.setLiveDrawingView('front',surface)})
     setSaveStatus('saved')
@@ -845,8 +868,11 @@ export default function Home() {
           tool={tool}
           color={color}
           thickness={thickness}
+          brushSizeCm={brushSizeCm}
           mirror={mirror}
           shapeKind={shapeKind}
+          shapeWidthCm={shapeWidthCm}
+          shapeHeightCm={shapeHeightCm}
           stoneShape={stoneShape}
           stoneSize={stoneSize}
           stoneCount={stoneCount}
@@ -856,6 +882,7 @@ export default function Home() {
           mapPoint={(clientX, clientY) => engineRef.current?.screenToDrawingPoint(activePlaneId, clientX, clientY) ?? null}
           onSurfaceChange={() => engineRef.current?.markDrawingViewDirty(activePlaneId)}
           passthrough3D={SURFACE_3D_TOOLS.has(tool)}
+          snapEnabled={snapEnabled}
           activeLayerId={activeLayerId}
           layers={layers}
           pencilOnly={pencilOnly}
@@ -1116,7 +1143,7 @@ export default function Home() {
 
             {tool === 'fill' && (
               <div className="surface-fill-controls">
-                <div className="surface-fill-copy"><strong>SURFACE FILL</strong><span>{TOOL_HINTS.fill}</span></div>
+                <div className="surface-fill-copy"><strong>2D CANVAS FILL</strong><span>{TOOL_HINTS.fill}</span></div>
                 <div className="active-fabric-chip"><span className="active-fabric-dot" style={{background:color}}/><span>{fabric === 'matte' ? 'STRETCH JERSEY' : fabric.toUpperCase()}</span></div>
                 <button
                   onClick={() => setMaterialsOpen(true)}
@@ -1229,17 +1256,17 @@ export default function Home() {
       {layersOpen && (
         <div className="layers-backdrop absolute inset-0 z-20 flex items-end" onClick={() => setLayersOpen(false)}>
           <div className="studio-sheet layers-sheet w-full rounded-t-3xl p-5" onClick={(e)=>e.stopPropagation()}>
-            <div className="sheet-header"><div><div className="sheet-title">DRAWING LAYERS</div><div className="sheet-subtitle">{activeView.toUpperCase()} VIEW · tap a layer to draw into it</div></div><button aria-label="Close layers" style={iconBtn(false)} onClick={()=>setLayersOpen(false)}><X size={18}/></button></div>
+            <div className="sheet-header"><div><div className="sheet-title">2D CANVASES & LAYERS</div><div className="sheet-subtitle">Each editable 2D canvas stays anchored at its own 3D angle</div></div><button aria-label="Close layers" style={iconBtn(false)} onClick={()=>setLayersOpen(false)}><X size={18}/></button></div>
             <div className="canvas-layer-section">
-              <div className="canvas-layer-heading"><span>3D DRAWING CANVASES</span><small>Select a canvas, set its depth, or return the camera to it</small></div>
+              <div className="canvas-layer-heading"><span>2D CANVASES IN 3D SPACE</span><button className="new-canvas-button" onClick={()=>createNewDrawingCanvas()}><Plus size={15}/> NEW 2D CANVAS</button></div>
               <div className="canvas-layer-row" data-active="true">
                 <button className="canvas-focus" aria-label="Move camera to active drawing canvas" onClick={()=>previewDrawingPlane(activePlaneId)}><Camera size={17}/></button>
-                <div><strong>Current canvas</strong><small>{activeView.toUpperCase()} · EDITING</small></div>
+                <div><input className="canvas-name-input" aria-label="Rename current canvas" value={activePlaneName} onChange={(event)=>{const name=event.target.value;setActivePlaneName(name);scheduleDrawingSave(drawingViews,layers,{activePlaneName:name})}}/><small>{activeView.toUpperCase()} · EDITING</small></div>
                 <label><span>DEPTH {activePlaneDepth>0?'+':''}{activePlaneDepth} cm</span><input aria-label="Current canvas depth" type="range" min={-30} max={40} step={1} value={activePlaneDepth} onFocus={()=>previewDrawingPlane(activePlaneId)} onPointerDown={()=>previewDrawingPlane(activePlaneId)} onChange={(event)=>setPlaneDepth(activePlaneId,Number(event.target.value))}/></label>
               </div>
               {anchoredPlanes.map((plane,index)=><div key={plane.id} className="canvas-layer-row">
                 <button className="canvas-focus" aria-label={`Move camera to canvas ${index+1}`} onClick={()=>previewDrawingPlane(plane.id)}><Camera size={17}/></button>
-                <button className="canvas-open" onClick={()=>openDrawingPlane(plane)}><strong>Canvas {index+1}</strong><small>{plane.view.toUpperCase()} · {plane.actions.length} items</small></button>
+                <div className="canvas-open"><input className="canvas-name-input" aria-label={`Rename ${plane.name||`Canvas ${index+1}`}`} value={plane.name||`Canvas ${index+1}`} onChange={(event)=>{const name=event.target.value;const next=anchoredPlanes.map((item)=>item.id===plane.id?{...item,name}:item);setAnchoredPlanes(next);scheduleDrawingSave(drawingViews,layers,{anchoredPlanes:next})}}/><button onClick={()=>openDrawingPlane(plane)}>EDIT CANVAS · {plane.view.toUpperCase()} · {plane.actions.length} items</button></div>
                 <label><span>DEPTH {plane.depth>0?'+':''}{plane.depth} cm</span><input aria-label={`Canvas ${index+1} depth`} type="range" min={-30} max={40} step={1} value={plane.depth} onFocus={()=>previewDrawingPlane(plane.id)} onPointerDown={()=>previewDrawingPlane(plane.id)} onChange={(event)=>setPlaneDepth(plane.id,Number(event.target.value))}/></label>
               </div>)}
             </div>

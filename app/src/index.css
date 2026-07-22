@@ -289,6 +289,7 @@ button {
 .canvas-layer-section { display:grid; gap:7px; margin-bottom:16px; padding-bottom:16px; border-bottom:1px solid rgba(239,231,218,.1); }
 .canvas-layer-heading { display:flex; align-items:flex-end; justify-content:space-between; gap:12px; margin-bottom:2px; color:#c9a96a; font-size:9px; letter-spacing:.13em; }
 .canvas-layer-heading small { color:rgba(239,231,218,.42); font-size:9px; letter-spacing:0; }
+.new-canvas-button { min-height:36px; display:flex; align-items:center; gap:6px; padding:0 12px; border:1px solid rgba(201,169,106,.42); border-radius:11px; color:#16130f; background:#c9a96a; font-size:9px; font-weight:750; letter-spacing:.07em; }
 .canvas-layer-row { min-height:58px; display:grid; grid-template-columns:38px minmax(105px,1fr) minmax(135px,220px); align-items:center; gap:9px; padding:8px; border:1px solid rgba(239,231,218,.1); border-radius:15px; color:#efe7da; background:rgba(239,231,218,.04); }
 .canvas-layer-row[data-active='true'] { border-color:rgba(201,169,106,.55); background:rgba(201,169,106,.08); }
 .canvas-layer-row strong,.canvas-layer-row small { display:block; text-align:left; }
@@ -296,6 +297,9 @@ button {
 .canvas-layer-row small { margin-top:3px; color:rgba(239,231,218,.42); font-size:8px; letter-spacing:.07em; }
 .canvas-focus { width:36px; height:36px; display:grid; place-items:center; border-radius:10px; color:#c9a96a; background:rgba(201,169,106,.1); }
 .canvas-open { min-width:0; }
+.canvas-name-input { width:100%; min-width:0; height:28px; padding:0 7px; border:1px solid transparent; border-radius:8px; outline:none; color:#efe7da; background:transparent; font-size:11px; font-weight:700; }
+.canvas-name-input:focus { border-color:rgba(201,169,106,.56); background:rgba(0,0,0,.2); }
+.canvas-open > button { display:block; margin-top:2px; padding:2px 7px; color:rgba(201,169,106,.85); font-size:8px; letter-spacing:.06em; text-align:left; }
 .canvas-layer-row label { display:grid; gap:2px; color:rgba(239,231,218,.5); font-size:8px; letter-spacing:.08em; }
 .canvas-layer-row input { width:100%; accent-color:#c9a96a; }
 .layer-row { min-height:55px; display:grid; grid-template-columns:34px 38px minmax(85px,1fr) minmax(72px,130px) 34px; align-items:center; gap:8px; padding:7px; border:1px solid rgba(239,231,218,.1); border-radius:15px; color:rgba(239,231,218,.72); background:rgba(239,231,218,.04); }
