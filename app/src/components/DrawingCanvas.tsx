@@ -13,6 +13,12 @@ export interface LayerDefinition {
   visible: boolean
   locked: boolean
   opacity: number
+  kind?: 'drawing' | 'reference'
+  view?: DrawingViewId
+  image?: string
+  x?: number
+  y?: number
+  scale?: number
 }
 
 type Base = { id: string; layerId?: string }
@@ -52,6 +58,7 @@ export interface DrawingCanvasHandle {
   duplicateLastStones: () => void
   scaleSelected: (factor: number) => void
   rotateSelected: (radians: number) => void
+  resizeSelectedShape: (widthCm: number, heightCm: number) => void
   addTemplate: (template: GarmentTemplate) => void
 }
 
@@ -74,15 +81,17 @@ interface Props {
   onSurfaceChange?: () => void
   passthrough3D: boolean
   snapEnabled: boolean
+  activeView: DrawingViewId
   activeLayerId: string
   layers: LayerDefinition[]
+  onLayersChange?: (layers: LayerDefinition[]) => void
   pencilOnly: boolean
   showCoverage: boolean
   coverageMode: CoverageMode
   heightCm: number
   initialActions: DrawingAction[]
   onChange: (actions: DrawingAction[]) => void
-  onSelectionChange?: (selected: boolean) => void
+  onSelectionChange?: (selected: boolean, kind?: DrawingAction['kind'] | 'reference') => void
 }
 
 const uid = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
@@ -221,6 +230,11 @@ function bounds(action: DrawingAction) {
   return { minX: Math.min(...points.map((p) => p.x)), maxX: Math.max(...points.map((p) => p.x)), minY: Math.min(...points.map((p) => p.y)), maxY: Math.max(...points.map((p) => p.y)) }
 }
 
+function boundsArea(action: DrawingAction) {
+  const box=bounds(action)
+  return box ? Math.max(0,box.maxX-box.minX)*Math.max(0,box.maxY-box.minY) : Number.POSITIVE_INFINITY
+}
+
 function closestPointOnSegment(point: Point, start: Point, end: Point): Point {
   const dx=end.x-start.x,dy=end.y-start.y,length=dx*dx+dy*dy
   if(length<1e-9)return{...start}
@@ -236,19 +250,19 @@ function mapAction(action: DrawingAction, transform: (point: Point) => Point): D
 
 function templateActions(template: GarmentTemplate, layerId: string, color: string, size: number): DrawingAction[] {
   const closed = (points: Array<[number, number]>, mirror = false): DrawingAction => ({ id: uid(), layerId, kind: 'stroke', mode: 'pencil', color, size, mirror, closed: true, points: [...points.map(([x, y]) => pt(x, y)), pt(points[0][0], points[0][1])] })
-  if (template === 'bodice') return [closed([[.39,.27],[.61,.27],[.66,.47],[.59,.62],[.41,.62],[.34,.47]])]
-  if (template === 'corset') return [closed([[.37,.31],[.63,.31],[.61,.62],[.55,.69],[.45,.69],[.39,.62]])]
-  if (template === 'brief') return [closed([[.38,.60],[.62,.60],[.58,.75],[.5,.82],[.42,.75]])]
-  if (template === 'skirt') return [closed([[.39,.58],[.61,.58],[.72,.86],[.28,.86]])]
-  if (template === 'longDress') return [closed([[.39,.57],[.61,.57],[.73,.96],[.27,.96]])]
-  if (template === 'cups') return [closed([[.39,.38],[.5,.32],[.5,.48],[.39,.48]], true)]
-  if (template === 'sleeves') return [closed([[.37,.29],[.28,.31],[.23,.56],[.31,.57],[.39,.39]], true)]
-  if (template === 'gloves') return [closed([[.31,.45],[.25,.45],[.2,.78],[.27,.78]], true)]
-  if (template === 'stockings') return [closed([[.42,.67],[.49,.67],[.47,.96],[.39,.96]], true)]
-  if (template === 'catsuit') return [closed([[.39,.28],[.61,.28],[.61,.61],[.55,.67],[.53,.96],[.47,.96],[.45,.67],[.39,.61]])]
-  if (template === 'straps') return [closed([[.4,.28],[.43,.27],[.47,.12],[.44,.12]], true)]
-  if (template === 'fringe') return Array.from({ length: 11 }, (_, i) => ({ id: uid(), layerId, kind: 'stroke' as const, mode: 'pencil' as const, color, size: Math.max(1.5, size * .55), mirror: false, closed: false, points: [pt(.36 + i * .028,.61), pt(.35 + i * .03,.78 + (i % 2) * .03)] }))
-  return Array.from({ length: 9 }, (_, i) => ({ id: uid(), layerId, kind: 'stroke' as const, mode: 'pencil' as const, color, size: Math.max(2, size), mirror: false, closed: false, points: [pt(.39 + i * .028,.61), pt(.32 + i * .045,.74), pt(.36 + i * .035,.83)] }))
+  if (template === 'bodice') return [closed([[.405,.285],[.455,.27],[.5,.305],[.545,.27],[.595,.285],[.625,.37],[.61,.49],[.575,.58],[.55,.625],[.5,.64],[.45,.625],[.425,.58],[.39,.49],[.375,.37]])]
+  if (template === 'corset') return [closed([[.39,.39],[.425,.345],[.5,.33],[.575,.345],[.61,.39],[.6,.535],[.57,.625],[.53,.665],[.5,.675],[.47,.665],[.43,.625],[.4,.535]])]
+  if (template === 'brief') return [closed([[.385,.585],[.44,.57],[.5,.59],[.56,.57],[.615,.585],[.6,.675],[.565,.745],[.525,.78],[.5,.765],[.475,.78],[.435,.745],[.4,.675]])]
+  if (template === 'skirt') return [closed([[.39,.57],[.445,.555],[.5,.565],[.555,.555],[.61,.57],[.645,.7],[.675,.835],[.5,.86],[.325,.835],[.355,.7]])]
+  if (template === 'longDress') return [closed([[.39,.56],[.445,.55],[.5,.565],[.555,.55],[.61,.56],[.625,.68],[.66,.82],[.71,.97],[.5,.985],[.29,.97],[.34,.82],[.375,.68]])]
+  if (template === 'cups') return [closed([[.385,.385],[.405,.345],[.445,.325],[.48,.345],[.5,.39],[.49,.455],[.455,.49],[.405,.475],[.38,.435]], true)]
+  if (template === 'sleeves') return [closed([[.39,.3],[.35,.28],[.305,.3],[.275,.36],[.255,.47],[.235,.58],[.275,.595],[.315,.56],[.335,.46],[.36,.36]], true)]
+  if (template === 'gloves') return [closed([[.31,.455],[.275,.44],[.245,.47],[.225,.58],[.205,.77],[.235,.82],[.275,.79],[.295,.65]], true)]
+  if (template === 'stockings') return [closed([[.405,.665],[.445,.645],[.485,.665],[.48,.75],[.47,.84],[.46,.965],[.415,.975],[.39,.91],[.395,.79]], true)]
+  if (template === 'catsuit') return [closed([[.405,.285],[.455,.27],[.5,.305],[.545,.27],[.595,.285],[.62,.4],[.6,.55],[.565,.635],[.545,.69],[.54,.82],[.53,.97],[.485,.97],[.475,.82],[.465,.69],[.435,.635],[.4,.55],[.38,.4]])]
+  if (template === 'straps') return [closed([[.405,.31],[.43,.295],[.455,.18],[.445,.13],[.415,.14],[.425,.19]], true)]
+  if (template === 'fringe') return Array.from({ length: 13 }, (_, i) => ({ id: uid(), layerId, kind: 'stroke' as const, mode: 'pencil' as const, color, size: Math.max(1.5, size * .55), mirror: false, closed: false, points: [pt(.35 + i * .025,.61), pt(.348 + i * .025,.69), pt(.34 + i * .027,.78 + (i % 3) * .025)] }))
+  return Array.from({ length: 11 }, (_, i) => ({ id: uid(), layerId, kind: 'stroke' as const, mode: 'pencil' as const, color, size: Math.max(2, size), mirror: false, closed: false, points: [pt(.37 + i * .026,.60),pt(.34 + i * .032,.67),pt(.305 + i * .041,.76),pt(.335 + i * .035,.84)] }))
 }
 
 export const DrawingCanvas = forwardRef<DrawingCanvasHandle, Props>(function DrawingCanvas(props, ref) {
@@ -258,9 +272,12 @@ export const DrawingCanvas = forwardRef<DrawingCanvasHandle, Props>(function Dra
   const activeRef = useRef<DrawingAction | null>(null)
   const selectedRef = useRef<string | null>(null)
   const dragRef = useRef<Point | null>(null)
+  const referenceDragRef = useRef<{ layerId: string; point: Point; x: number; y: number } | null>(null)
   const dragChangedRef = useRef(false)
   const sizeRef = useRef({ w: 1, h: 1, dpr: 1 })
   const rasterImagesRef = useRef(new Map<string, HTMLImageElement>())
+  const layerFrameRef = useRef<number | null>(null)
+  const pendingLayersRef = useRef<LayerDefinition[] | null>(null)
 
   const layerFor = (action: DrawingAction) => props.layers.find((layer) => layer.id === (action.layerId || 'design'))
   const render = (clean = false) => {
@@ -283,8 +300,15 @@ export const DrawingCanvas = forwardRef<DrawingCanvasHandle, Props>(function Dra
     const all = activeRef.current ? [...actionsRef.current, activeRef.current] : actionsRef.current
     const fills = new Map(all.filter((a): a is Extract<DrawingAction, { kind: 'fill' }> => a.kind === 'fill').map((a) => [a.targetId, a]))
     for (const layer of props.layers) {
-      if (!layer.visible) continue
+      if (!layer.visible || (layer.view && layer.view !== props.activeView)) continue
       ctx.save(); ctx.globalAlpha = layer.opacity
+      if(layer.kind==='reference'&&layer.image){
+        if(clean){ctx.restore();continue}
+        let image=rasterImagesRef.current.get(`reference:${layer.id}`)
+        if(!image){image=new Image();image.onload=()=>render();image.src=layer.image;rasterImagesRef.current.set(`reference:${layer.id}`,image)}
+        if(image.complete&&image.naturalWidth){const width=w*(layer.scale??.68),height=width*image.naturalHeight/image.naturalWidth,cx=(layer.x??.5)*w,cy=(layer.y??.5)*h;ctx.drawImage(image,cx-width/2,cy-height/2,width,height);if(!clean&&selectedRef.current===`reference:${layer.id}`){ctx.save();ctx.globalAlpha=1;ctx.setLineDash([8,5]);ctx.strokeStyle='#c9a96a';ctx.lineWidth=2;ctx.strokeRect(cx-width/2-5,cy-height/2-5,width+10,height+10);ctx.restore()}}
+        ctx.restore();continue
+      }
       for (const action of all.filter((item): item is Extract<DrawingAction,{kind:'area-fill'}> => (item.layerId || 'design') === layer.id && item.kind === 'area-fill')) {
         let image=rasterImagesRef.current.get(action.id)
         if(!image){image=new Image();image.onload=()=>render();image.src=action.image;rasterImagesRef.current.set(action.id,image)}
@@ -305,7 +329,8 @@ export const DrawingCanvas = forwardRef<DrawingCanvasHandle, Props>(function Dra
           for (const mirrored of action.mirror?[false,true]:[false]) { const path=pathFor(action,w,h,mirrored),fill=fills.get(action.id); if(fill){ctx.save();ctx.globalAlpha*=fill.material==='mesh'?.48:fill.material==='lace'?.82:.9;ctx.fillStyle=materialFill(ctx,fill.material||'matte',fill.color,w,h,fill.scale,fill.rotation);ctx.fill(path);ctx.restore()} ctx.strokeStyle=action.color;ctx.lineWidth=action.size;ctx.stroke(path) }
         } else if (action.kind === 'stones') {
           const sprite=stoneSprite(action.shape,action.color,action.size),half=sprite.width/2
-          for (const point of action.points) for (const mirrored of action.mirror?[false,true]:[false]) { const px=(mirrored?1-point.x:point.x)*w,py=point.y*h; for(let i=0;i<action.count;i++){const angle=i/Math.max(1,action.count)*Math.PI*2,spread=i===0?0:action.size*1.25;ctx.drawImage(sprite,px+Math.cos(angle)*spread-half,py+Math.sin(angle)*spread-half)} }
+          if(!clean&&activeRef.current===action&&action.points.length>1){ctx.save();ctx.setLineDash([4,5]);ctx.strokeStyle='rgba(201,169,106,.8)';ctx.lineWidth=1.5;ctx.beginPath();action.points.forEach((point,index)=>index?ctx.lineTo(point.x*w,point.y*h):ctx.moveTo(point.x*w,point.y*h));ctx.stroke();ctx.restore()}
+          for (const point of action.points) for (const mirrored of action.mirror?[false,true]:[false]) { const px=(mirrored?1-point.x:point.x)*w,py=point.y*h;ctx.drawImage(sprite,px-half,py-half) }
         } else if (action.kind === 'measure') {
           const x1=action.start.x*w,y1=action.start.y*h,x2=action.end.x*w,y2=action.end.y*h,d=Math.hypot(x2-x1,y2-y1),cm=Math.round(d/h*props.heightCm*1.25)
           ctx.save();ctx.setLineDash([5,4]);ctx.strokeStyle=action.color;ctx.fillStyle=action.color;ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();ctx.setLineDash([]);ctx.beginPath();ctx.arc(x1,y1,4,0,Math.PI*2);ctx.arc(x2,y2,4,0,Math.PI*2);ctx.fill();ctx.font='600 12px system-ui';ctx.fillText(action.label||`${cm} cm`,(x1+x2)/2+6,(y1+y2)/2-6);ctx.restore()
@@ -323,14 +348,15 @@ export const DrawingCanvas = forwardRef<DrawingCanvasHandle, Props>(function Dra
   const commit = (action: DrawingAction) => { redoRef.current=[]; publish([...actionsRef.current,action]) }
   const selectedAction = () => actionsRef.current.find((action)=>action.id===selectedRef.current)
   const mutateSelected = (mapper:(action:DrawingAction)=>DrawingAction) => { const id=selectedRef.current;if(!id)return;publish(actionsRef.current.map((action)=>action.id===id?mapper(action):action)) }
+  const queueLayerChange=(layers:LayerDefinition[])=>{pendingLayersRef.current=layers;if(layerFrameRef.current!==null)return;layerFrameRef.current=requestAnimationFrame(()=>{layerFrameRef.current=null;const pending=pendingLayersRef.current;pendingLayersRef.current=null;if(pending)props.onLayersChange?.(pending)})}
 
   const makeAreaFill=(point:Point):string|null=>{
-    const source=canvasRef.current;if(!source)return null
-    render(true)
-    const{w,h}=sizeRef.current,maskW=Math.min(800,Math.max(240,Math.round(w))),maskH=Math.max(240,Math.round(maskW*h/w))
+    if(!canvasRef.current)return null
+    const{w,h}=sizeRef.current,maskW=Math.min(1400,Math.max(480,Math.round(w*1.5))),maskH=Math.max(480,Math.round(maskW*h/w))
     const boundary=document.createElement('canvas');boundary.width=maskW;boundary.height=maskH
     const boundaryCtx=boundary.getContext('2d',{willReadFrequently:true});if(!boundaryCtx){render();return null}
-    boundaryCtx.drawImage(source,0,0,maskW,maskH)
+    boundaryCtx.strokeStyle='#000';boundaryCtx.lineWidth=Math.max(4,maskW/320);boundaryCtx.lineCap='round';boundaryCtx.lineJoin='round'
+    for(const action of actionsRef.current){const layer=layerFor(action);if(!layer?.visible||layer.kind==='reference'||(layer.view&&layer.view!==props.activeView))continue;if(action.kind==='shape'||(action.kind==='stroke'&&(action.mode==='pencil'||action.mode==='eraser'))){for(const mirrored of action.mirror?[false,true]:[false])boundaryCtx.stroke(pathFor(action,maskW,maskH,mirrored))}}
     const pixels=boundaryCtx.getImageData(0,0,maskW,maskH),seedX=Math.max(0,Math.min(maskW-1,Math.floor(point.x*maskW))),seedY=Math.max(0,Math.min(maskH-1,Math.floor(point.y*maskH))),seed=seedY*maskW+seedX
     if(pixels.data[seed*4+3]>36){render();return null}
     const visited=new Uint8Array(maskW*maskH),queue=new Int32Array(maskW*maskH);let head=0,tail=0,touchesEdge=false
@@ -342,12 +368,13 @@ export const DrawingCanvas = forwardRef<DrawingCanvasHandle, Props>(function Dra
     maskCtx.putImageData(maskData,0,0)
     const filled=document.createElement('canvas');filled.width=maskW;filled.height=maskH;const fillCtx=filled.getContext('2d')!
     fillCtx.globalAlpha=props.fabric==='mesh'?.48:props.fabric==='lace'?.82:.9;fillCtx.fillStyle=materialFill(fillCtx,props.fabric,props.color,maskW,maskH,props.materialScale,props.materialRotation);fillCtx.fillRect(0,0,maskW,maskH);fillCtx.globalAlpha=1;fillCtx.globalCompositeOperation='destination-in';fillCtx.drawImage(mask,0,0)
-    const image=filled.toDataURL('image/png');render();return image
+    return filled.toDataURL('image/png')
   }
 
   useEffect(()=>{actionsRef.current=props.initialActions;selectedRef.current=null;props.onSelectionChange?.(false);render()},[props.initialActions])
-  useEffect(()=>{const canvas=canvasRef.current;if(!canvas)return;const resize=()=>{const parent=canvas.parentElement,w=Math.max(1,parent?.clientWidth??innerWidth),h=Math.max(1,parent?.clientHeight??innerHeight),coarse=matchMedia('(pointer: coarse)').matches,dpr=Math.min(devicePixelRatio||1,coarse?1.25:1.75);canvas.width=Math.round(w*dpr);canvas.height=Math.round(h*dpr);canvas.style.width=`${w}px`;canvas.style.height=`${h}px`;sizeRef.current={w,h,dpr};render()};const observer=new ResizeObserver(resize);observer.observe(canvas.parentElement??canvas);resize();return()=>observer.disconnect()},[])
-  useEffect(render,[props.layers,props.showCoverage,props.coverageMode,props.heightCm])
+  useEffect(()=>{const canvas=canvasRef.current;if(!canvas)return;const resize=()=>{const parent=canvas.parentElement,w=Math.max(1,parent?.clientWidth??innerWidth),h=Math.max(1,parent?.clientHeight??innerHeight),coarse=matchMedia('(pointer: coarse)').matches,dpr=Math.min(devicePixelRatio||1,coarse?2:2.5);canvas.width=Math.round(w*dpr);canvas.height=Math.round(h*dpr);canvas.style.width=`${w}px`;canvas.style.height=`${h}px`;sizeRef.current={w,h,dpr};const ctx=canvas.getContext('2d');if(ctx)ctx.imageSmoothingQuality='high';render()};const observer=new ResizeObserver(resize);observer.observe(canvas.parentElement??canvas);resize();return()=>observer.disconnect()},[])
+  useEffect(()=>()=>{if(layerFrameRef.current!==null)cancelAnimationFrame(layerFrameRef.current)},[])
+  useEffect(render,[props.layers,props.activeView,props.showCoverage,props.coverageMode,props.heightCm])
 
   useImperativeHandle(ref,()=>({
     undo:()=>{const action=actionsRef.current.at(-1);if(!action)return;redoRef.current.push(action);publish(actionsRef.current.slice(0,-1))},
@@ -361,6 +388,7 @@ export const DrawingCanvas = forwardRef<DrawingCanvasHandle, Props>(function Dra
     duplicateLastStones:()=>{const action=[...actionsRef.current].reverse().find((item):item is Extract<DrawingAction,{kind:'stones'}>=>item.kind==='stones');if(!action)return;const copy={...structuredClone(action),id:uid(),points:action.points.map((p)=>({...p,x:clamp(p.x+.025),y:clamp(p.y+.025)}))};commit(copy)},
     scaleSelected:(factor)=>mutateSelected((action)=>{const box=bounds(action);if(!box)return action;const cx=(box.minX+box.maxX)/2,cy=(box.minY+box.maxY)/2;return mapAction(action,(p)=>({...p,x:clamp(cx+(p.x-cx)*factor),y:clamp(cy+(p.y-cy)*factor)}))}),
     rotateSelected:(angle)=>mutateSelected((action)=>{const box=bounds(action);if(!box)return action;const cx=(box.minX+box.maxX)/2,cy=(box.minY+box.maxY)/2;return mapAction(action,(p)=>{const dx=p.x-cx,dy=p.y-cy;return{...p,x:clamp(cx+dx*Math.cos(angle)-dy*Math.sin(angle)),y:clamp(cy+dx*Math.sin(angle)+dy*Math.cos(angle))}})}),
+    resizeSelectedShape:(widthCm,heightCm)=>mutateSelected((action)=>{if(action.kind!=='shape')return action;const{w,h}=sizeRef.current,cx=(action.start.x+action.end.x)/2,cy=(action.start.y+action.end.y)/2,width=widthCm*h/(props.heightCm*1.25*w),height=(action.shape==='rectangle'?heightCm:widthCm)/(props.heightCm*1.25);return{...action,start:{...action.start,x:clamp(cx-width/2),y:clamp(cy-height/2)},end:{...action.end,x:clamp(cx+width/2),y:clamp(cy+height/2)}}}),
     addTemplate:(template)=>{const actions=templateActions(template,props.activeLayerId,props.color,Math.max(2,props.thickness));redoRef.current=[];publish([...actionsRef.current,...actions])},
   }))
 
@@ -381,23 +409,23 @@ export const DrawingCanvas = forwardRef<DrawingCanvasHandle, Props>(function Dra
   }
   const onPointerDown=(event:React.PointerEvent<HTMLCanvasElement>)=>{
     if(props.tool==='move'||(props.pencilOnly&&event.pointerType!=='pen'&&props.tool!=='select'))return
-    const point=pointFrom(event);if(!point)return;event.preventDefault();event.currentTarget.setPointerCapture(event.pointerId);const layer=props.layers.find((item)=>item.id===props.activeLayerId);if(layer?.locked)return
-    if(props.tool==='select'){for(let i=actionsRef.current.length-1;i>=0;i--){const action=actionsRef.current[i],box=bounds(action);if(!box||!layerFor(action)?.visible)continue;if(point.x>=box.minX-.035&&point.x<=box.maxX+.035&&point.y>=box.minY-.035&&point.y<=box.maxY+.035){selectedRef.current=action.id;dragRef.current=point;dragChangedRef.current=false;props.onSelectionChange?.(true);render();return}}selectedRef.current=null;props.onSelectionChange?.(false);render();return}
+    const point=pointFrom(event);if(!point)return;event.preventDefault();event.currentTarget.setPointerCapture(event.pointerId);const layer=props.layers.find((item)=>item.id===props.activeLayerId);if(layer?.locked||(layer?.kind==='reference'&&props.tool!=='select'))return
+    if(props.tool==='select'){
+      if(layer?.kind==='reference'&&layer.image&&layer.visible&&!layer.locked&&(layer.view??props.activeView)===props.activeView){selectedRef.current=`reference:${layer.id}`;referenceDragRef.current={layerId:layer.id,point,x:layer.x??.5,y:layer.y??.5};props.onSelectionChange?.(true,'reference');render();return}
+      for(let i=actionsRef.current.length-1;i>=0;i--){const action=actionsRef.current[i],box=bounds(action);if(!box||!layerFor(action)?.visible)continue;if(point.x>=box.minX-.035&&point.x<=box.maxX+.035&&point.y>=box.minY-.035&&point.y<=box.maxY+.035){selectedRef.current=action.id;dragRef.current=point;dragChangedRef.current=false;props.onSelectionChange?.(true,action.kind);render();return}}selectedRef.current=null;props.onSelectionChange?.(false);render();return
+    }
     if(props.tool==='fill'){
       const{w,h}=sizeRef.current
-      for(let i=actionsRef.current.length-1;i>=0;i--){
-        const action=actionsRef.current[i]
+      const candidates=actionsRef.current.filter((action)=>{
         const fillable=action.kind==='shape'||action.kind==='stroke'
         const targetLayer=layerFor(action)
-        if(!fillable||!targetLayer?.visible||targetLayer.locked)continue
+        if(!fillable||!targetLayer?.visible||targetLayer.locked||targetLayer.kind==='reference'||(action.kind==='stroke'&&action.mode!=='pencil'))return false
         const insidePrimary=containsPoint(action,point,w,h)
         const insideMirror=action.mirror&&containsPoint(action,point,w,h,true)
-        if(insidePrimary||insideMirror){
-          const normalized=actionsRef.current.map((item)=>item.id===action.id&&item.kind==='stroke'&&!item.closed?{...item,closed:true,points:[...item.points.slice(0,-1),{...item.points[0]}]}:item)
-          const previous=normalized.filter((item)=>!(item.kind==='fill'&&item.targetId===action.id))
-          publish([...previous,{id:uid(),layerId:action.layerId||props.activeLayerId,kind:'fill',targetId:action.id,color:props.color,material:props.fabric,scale:props.materialScale,rotation:props.materialRotation}]);return
-        }
-      }
+        return Boolean(insidePrimary||insideMirror)
+      }).sort((a,b)=>boundsArea(a)-boundsArea(b))
+      const action=candidates[0]
+      if(action){const normalized=actionsRef.current.map((item)=>item.id===action.id&&item.kind==='stroke'&&!item.closed?{...item,closed:true,points:[...item.points.slice(0,-1),{...item.points[0]}]}:item);const previous=normalized.filter((item)=>!(item.kind==='fill'&&item.targetId===action.id));publish([...previous,{id:uid(),layerId:action.layerId||props.activeLayerId,kind:'fill',targetId:action.id,color:props.color,material:props.fabric,scale:props.materialScale,rotation:props.materialRotation}]);return}
       const areaImage=makeAreaFill(point)
       if(areaImage){const id=uid(),image=new Image();image.src=areaImage;rasterImagesRef.current.set(id,image);publish([...actionsRef.current,{id,layerId:props.activeLayerId,kind:'area-fill',image:areaImage}])}
       return
@@ -414,8 +442,26 @@ export const DrawingCanvas = forwardRef<DrawingCanvasHandle, Props>(function Dra
     }
     render()
   }
-  const onPointerMove=(event:React.PointerEvent<HTMLCanvasElement>)=>{let point=pointFrom(event);if(!point)return;if(props.tool==='select'&&selectedRef.current&&dragRef.current){const last=dragRef.current,dx=point.x-last.x,dy=point.y-last.y;dragRef.current=point;dragChangedRef.current=true;const id=selectedRef.current;actionsRef.current=actionsRef.current.map((action)=>action.id===id?mapAction(action,(p)=>({...p,x:clamp(p.x+dx),y:clamp(p.y+dy)})):action);render();return}const active=activeRef.current;if(!active||!event.currentTarget.hasPointerCapture(event.pointerId))return;event.preventDefault();if(active.kind==='measure')active.end=point;else if(active.kind==='stroke'||active.kind==='stones'){if(active.kind==='stroke'&&active.mode==='pencil')point=snapPoint(point);const last=active.points.at(-1)!,{w,h}=sizeRef.current,spacing=active.kind==='stones'?Math.max(12,active.size*3.2):active.kind==='stroke'&&active.mode==='brush'?Math.max(2.5,(active.sizeCm||props.brushSizeCm)*.35):2.5,maxPoints=active.kind==='stones'?Math.max(1,Math.floor(720/(active.count*(active.mirror?2:1)))):Infinity;if(active.points.length<maxPoints&&Math.hypot((point.x-last.x)*w,(point.y-last.y)*h)>=spacing)active.points.push(point)}render()}
-  const onPointerUp=(event:React.PointerEvent<HTMLCanvasElement>)=>{const movedSelection=dragChangedRef.current;dragRef.current=null;dragChangedRef.current=false;if(movedSelection){redoRef.current=[];props.onChange(actionsRef.current);try{event.currentTarget.releasePointerCapture(event.pointerId)}catch{/* released */}return}const active=activeRef.current;if(!active)return;if(active.kind==='stroke'&&active.mode==='pencil'&&active.points.length>5){const first=active.points[0],last=active.points.at(-1)!,{w,h}=sizeRef.current;const closeRadius=Math.max(40,Math.min(w,h)*.055,active.size*4);if(Math.hypot((last.x-first.x)*w,(last.y-first.y)*h)<=closeRadius){active.closed=true;active.points[active.points.length-1]={...first}}}commit(active);try{event.currentTarget.releasePointerCapture(event.pointerId)}catch{/* released */}}
+  const onPointerMove=(event:React.PointerEvent<HTMLCanvasElement>)=>{
+    let point=pointFrom(event);if(!point)return
+    if(props.tool==='select'&&referenceDragRef.current){const drag=referenceDragRef.current,dx=point.x-drag.point.x,dy=point.y-drag.point.y;queueLayerChange(props.layers.map((layer)=>layer.id===drag.layerId?{...layer,x:clamp(drag.x+dx),y:clamp(drag.y+dy)}:layer));return}
+    if(props.tool==='select'&&selectedRef.current&&dragRef.current){const last=dragRef.current,dx=point.x-last.x,dy=point.y-last.y;dragRef.current=point;dragChangedRef.current=true;const id=selectedRef.current;actionsRef.current=actionsRef.current.map((action)=>action.id===id?mapAction(action,(p)=>({...p,x:clamp(p.x+dx),y:clamp(p.y+dy)})):action);render();return}
+    const active=activeRef.current;if(!active||!event.currentTarget.hasPointerCapture(event.pointerId))return;event.preventDefault()
+    if(active.kind==='measure')active.end=point
+    else if(active.kind==='stroke'){if(active.mode==='pencil')point=snapPoint(point);const last=active.points.at(-1)!,{w,h}=sizeRef.current,spacing=active.mode==='brush'?Math.max(2.5,(active.sizeCm||props.brushSizeCm)*.35):2.5;if(Math.hypot((point.x-last.x)*w,(point.y-last.y)*h)>=spacing)active.points.push(point)}
+    else if(active.kind==='stones'&&active.points.length<active.count){const last=active.points.at(-1)!,{w,h}=sizeRef.current,spacing=Math.max(12,active.size*2.35),distance=Math.hypot((point.x-last.x)*w,(point.y-last.y)*h);if(distance>=spacing){const steps=Math.min(active.count-active.points.length,Math.floor(distance/spacing));for(let index=1;index<=steps;index++){const ratio=index*spacing/distance;active.points.push({...point,x:last.x+(point.x-last.x)*ratio,y:last.y+(point.y-last.y)*ratio})}}}
+    render()
+  }
+  const onPointerUp=(event:React.PointerEvent<HTMLCanvasElement>)=>{
+    if(referenceDragRef.current){referenceDragRef.current=null;try{event.currentTarget.releasePointerCapture(event.pointerId)}catch{/* released */}return}
+    const movedSelection=dragChangedRef.current;dragRef.current=null;dragChangedRef.current=false;if(movedSelection){redoRef.current=[];props.onChange(actionsRef.current);try{event.currentTarget.releasePointerCapture(event.pointerId)}catch{/* released */}return}
+    const active=activeRef.current;if(!active)return
+    if(active.kind==='stroke'&&active.mode==='pencil'&&active.points.length>5){const first=active.points[0],last=active.points.at(-1)!,{w,h}=sizeRef.current;const closeRadius=Math.max(40,Math.min(w,h)*.055,active.size*4);if(Math.hypot((last.x-first.x)*w,(last.y-first.y)*h)<=closeRadius){active.closed=true;active.points[active.points.length-1]={...first}}}
+    if(active.kind==='stones'&&active.points.length===1&&active.count>1){const{w}=sizeRef.current,spacing=Math.max(12,active.size*2.35)/w,center=active.points[0];active.points=Array.from({length:active.count},(_,index)=>({...center,x:clamp(center.x+(index-(active.count-1)/2)*spacing)}))}
+    commit(active)
+    if(active.kind==='shape'){selectedRef.current=active.id;props.onSelectionChange?.(true,'shape');render()}
+    try{event.currentTarget.releasePointerCapture(event.pointerId)}catch{/* released */}
+  }
 
   return <canvas ref={canvasRef} aria-label="Editable 2D garment canvas" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} style={{position:'absolute',inset:0,zIndex:2,touchAction:'none',pointerEvents:props.tool==='move'||props.passthrough3D?'none':'auto',opacity:0}} />
 })

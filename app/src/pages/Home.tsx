@@ -43,6 +43,7 @@ import {
   FolderOpen,
   Upload,
   FileDown,
+  ImagePlus,
 } from 'lucide-react'
 import {
   AtelierEngine,
@@ -85,10 +86,10 @@ import {
 const GOLD = '#c9a96a'
 const CHARCOAL = '#16130f'
 const DEFAULT_LAYERS: LayerDefinition[] = [
-  { id: 'design', name: 'Garment', visible: true, locked: false, opacity: 1 },
-  { id: 'details', name: 'Seams & trims', visible: true, locked: false, opacity: 1 },
-  { id: 'stones', name: 'Stones', visible: true, locked: false, opacity: 1 },
-  { id: 'notes', name: 'Measurements', visible: true, locked: false, opacity: 1 },
+  { id: 'design', name: 'Garment', visible: true, locked: false, opacity: 1, kind: 'drawing' },
+  { id: 'details', name: 'Seams & trims', visible: true, locked: false, opacity: 1, kind: 'drawing' },
+  { id: 'stones', name: 'Stones', visible: true, locked: false, opacity: 1, kind: 'drawing' },
+  { id: 'notes', name: 'Measurements', visible: true, locked: false, opacity: 1, kind: 'drawing' },
 ]
 const EMPTY_VIEWS: Record<DrawingViewId, DrawingAction[]> = { front: [], back: [], left: [], right: [] }
 
@@ -124,8 +125,8 @@ const TOOL_HINTS: Record<Tool, string> = {
   brush: 'Solid 2D paintbrush · choose a broad size and paint on the active canvas',
   spray: 'Soft 2D airbrush on the active canvas',
   fill: 'Tap inside closed 2D lines on the active canvas · the mannequin is never filled',
-  stone: 'Paint on stones using the shape, size and batch count below',
-  shape: 'Tap the canvas to place a precisely sized closed shape; use Fill inside it',
+  stone: 'Place an exact visible row or drag path—no random spray pattern',
+  shape: 'Tap to place an outlined shape, then resize the selected shape with its sliders',
   measure: 'Drag between two points to add a saved measurement',
   select: 'Tap an item to move, resize, rotate, duplicate or delete it',
   eraser: 'Tap or drag over a stroke to remove it',
@@ -305,6 +306,7 @@ export default function Home() {
   const [componentsOpen, setComponentsOpen] = useState(false)
   const [movementOpen, setMovementOpen] = useState(false)
   const [selectedDrawing, setSelectedDrawing] = useState(false)
+  const [selectedDrawingKind, setSelectedDrawingKind] = useState<DrawingAction['kind'] | 'reference' | undefined>()
   const [colorway, setColorway] = useState(0)
   const [drawingReady, setDrawingReady] = useState(false)
   const [activePlaneId, setActivePlaneId] = useState<string>('front')
@@ -318,6 +320,7 @@ export default function Home() {
   const [projectName, setProjectName] = useState('Untitled Design')
   const [projectBusy, setProjectBusy] = useState(false)
   const importProjectRef = useRef<HTMLInputElement>(null)
+  const referenceImageRef = useRef<HTMLInputElement>(null)
   const saveTimer = useRef<number | null>(null)
   const drawingSaveTimer = useRef<number | null>(null)
   const hydrated = useRef(false)
@@ -359,7 +362,7 @@ export default function Home() {
       } else {
         setDrawingViews(saved.views)
         setActiveView(saved.activeView || 'front')
-        setLayers(saved.layers)
+        setLayers((saved.layers?.length?saved.layers:DEFAULT_LAYERS).map((layer)=>({...layer,kind:layer.kind||'drawing'})))
         setActiveLayerId(saved.activeLayerId)
         setPencilOnly(saved.pencilOnly)
         setCoverageMode(saved.coverageMode)
@@ -517,6 +520,10 @@ export default function Home() {
       createNewDrawingCanvas(nextTool)
       return
     }
+    if(nextTool!=='move'&&nextTool!=='select'&&layers.find((layer)=>layer.id===activeLayerId)?.kind==='reference'){
+      const drawingLayer=layers.find((layer)=>layer.kind!=='reference')
+      if(drawingLayer)setActiveLayerId(drawingLayer.id)
+    }
     setTool(nextTool)
   }
 
@@ -585,8 +592,26 @@ export default function Home() {
     scheduleDrawingSave(drawingViews, next)
   }
 
+  function addDrawingLayer() {
+    const drawingCount=layers.filter((layer)=>layer.kind!=='reference').length
+    const layer:LayerDefinition={id:`layer-${Date.now().toString(36)}`,name:`Drawing ${drawingCount+1}`,visible:true,locked:false,opacity:1,kind:'drawing'}
+    const next=[...layers,layer];setActiveLayerId(layer.id);updateLayers(next)
+  }
+
+  async function addReferenceImage(file:File) {
+    if(!file.type.startsWith('image/'))return
+    const source=await new Promise<string>((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result));reader.onerror=()=>reject(reader.error);reader.readAsDataURL(file)})
+    const image=await new Promise<HTMLImageElement>((resolve,reject)=>{const next=new Image();next.onload=()=>resolve(next);next.onerror=reject;next.src=source})
+    const maxSide=1800,ratio=Math.min(1,maxSide/Math.max(image.naturalWidth,image.naturalHeight)),canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(image.naturalWidth*ratio));canvas.height=Math.max(1,Math.round(image.naturalHeight*ratio));canvas.getContext('2d')?.drawImage(image,0,0,canvas.width,canvas.height)
+    const id=`reference-${Date.now().toString(36)}`,name=file.name.replace(/\.[^.]+$/,'')||'Reference'
+    const layer:LayerDefinition={id,name,visible:true,locked:false,opacity:.55,kind:'reference',view:activeView,image:canvas.toDataURL('image/jpeg',.88),x:.5,y:.5,scale:.68}
+    const next=[...layers,layer];setActiveLayerId(id);setSelectedDrawing(true);setSelectedDrawingKind('reference');setTool('select');updateLayers(next);setLayersOpen(true)
+  }
+
   function addGarmentTemplate(template: GarmentTemplate) {
-    drawingRef.current?.addTemplate(template)
+    const target=layers.find((layer)=>layer.id===activeLayerId)?.kind==='reference'?layers.find((layer)=>layer.kind!=='reference'):layers.find((layer)=>layer.id===activeLayerId)
+    if(target&&target.id!==activeLayerId)setActiveLayerId(target.id)
+    window.requestAnimationFrame(()=>drawingRef.current?.addTemplate(template))
     setComponentsOpen(false)
   }
 
@@ -660,7 +685,7 @@ export default function Home() {
     engineRef.current?.clearDrawingPlanes()
     setDrawingViews(project.views)
     setActiveView(nextView)
-    setLayers(project.layers || DEFAULT_LAYERS)
+    setLayers((project.layers?.length?project.layers:DEFAULT_LAYERS).map((layer)=>({...layer,kind:layer.kind||'drawing'})))
     setActiveLayerId(project.activeLayerId || 'design')
     setPencilOnly(Boolean(project.pencilOnly))
     setCoverageMode(project.coverageMode || 'dance')
@@ -769,10 +794,10 @@ export default function Home() {
     if(drawingSaveTimer.current)window.clearTimeout(drawingSaveTimer.current)
     const views:Record<DrawingViewId,DrawingAction[]>={front:[],back:[],left:[],right:[]},engine=engineRef.current
     engine?.clearDrawingPlanes();engine?.clearAll();engine?.resetFabric();engine?.setViewPreset('front')
-    setDrawingViews(views);setAnchoredPlanes([]);setActiveView('front');setActivePlaneId('front');setActivePlaneAnchor(null);setActivePlaneDepth(0);setActivePlaneName('Front Canvas');setStrokes(0);setSelectedDrawing(false);setTool('move');setFabric('matte');setActiveProjectId(null);setProjectName('Untitled Design')
+    setDrawingViews(views);setLayers(DEFAULT_LAYERS);setActiveLayerId('design');setAnchoredPlanes([]);setActiveView('front');setActivePlaneId('front');setActivePlaneAnchor(null);setActivePlaneDepth(0);setActivePlaneName('Front Canvas');setStrokes(0);setSelectedDrawing(false);setSelectedDrawingKind(undefined);setTool('move');setFabric('matte');setActiveProjectId(null);setProjectName('Untitled Design')
     await persistActiveProjectId(null)
     setSaveStatus('saving')
-    const project:DrawingProject={version:2,views,activeView:'front',layers,activeLayerId,pencilOnly,coverageMode,showCoverage,anchoredPlanes:[],activePlaneId:'front',activePlaneAnchor:null,activePlaneDepth:0,activePlaneName:'Front Canvas'}
+    const project:DrawingProject={version:2,views,activeView:'front',layers:DEFAULT_LAYERS,activeLayerId:'design',pencilOnly,coverageMode,showCoverage,anchoredPlanes:[],activePlaneId:'front',activePlaneAnchor:null,activePlaneDepth:0,activePlaneName:'Front Canvas'}
     if(engine)await Promise.all([saveDrawing(project),saveActiveDesign(engine.exportState())]);else await saveDrawing(project)
     window.requestAnimationFrame(()=>{const surface=drawingRef.current?.getSurface();if(surface)engineRef.current?.setLiveDrawingView('front',surface)})
     setSaveStatus('saved')
@@ -834,7 +859,7 @@ export default function Home() {
   }
   const placedStoneCount = drawingViews[activeView]
     .filter((action): action is Extract<DrawingAction, { kind: 'stones' }> => action.kind === 'stones')
-    .reduce((total, action) => total + action.points.length * action.count * (action.mirror ? 2 : 1), 0)
+    .reduce((total, action) => total + action.points.length * (action.mirror ? 2 : 1), 0)
   const hasStonePlacement = drawingViews[activeView].some((action) => action.kind === 'stones')
 
   const iconBtn = (active: boolean): React.CSSProperties => ({
@@ -883,15 +908,17 @@ export default function Home() {
           onSurfaceChange={() => engineRef.current?.markDrawingViewDirty(activePlaneId)}
           passthrough3D={SURFACE_3D_TOOLS.has(tool)}
           snapEnabled={snapEnabled}
+          activeView={activeView}
           activeLayerId={activeLayerId}
           layers={layers}
+          onLayersChange={updateLayers}
           pencilOnly={pencilOnly}
           showCoverage={showCoverage}
           coverageMode={coverageMode}
           heightCm={height}
           initialActions={drawingViews[activeView]}
           onChange={handleDrawingChange}
-          onSelectionChange={setSelectedDrawing}
+          onSelectionChange={(selected,kind)=>{setSelectedDrawing(selected);setSelectedDrawingKind(kind)}}
         />
       )}
 
@@ -915,6 +942,8 @@ export default function Home() {
           <button className="studio-top-action" aria-label="Open saved project files" onClick={()=>void openProjectLibrary()}><FolderOpen size={17}/><span>FILES</span></button>
           <button className="studio-top-action" aria-label="Start a new design and clear all" onClick={()=>void newDesign()}><FilePlus2 size={17}/><span>NEW</span></button>
           <button aria-label="Layers" style={iconBtn(layersOpen)} onClick={() => {setPreviewPlaneId(activePlaneId);setLayersOpen(true)}}><Layers size={20} /></button>
+          <button aria-label="Add reference image" style={iconBtn(false)} onClick={()=>referenceImageRef.current?.click()}><ImagePlus size={20}/></button>
+          <input ref={referenceImageRef} hidden tabIndex={-1} type="file" accept="image/png,image/jpeg,image/webp" onChange={(event)=>{const file=event.target.files?.[0];event.target.value='';if(file)void addReferenceImage(file)}}/>
           <button
             className="studio-top-action outline-toggle"
             aria-label={outlinesVisible ? 'Hide pencil lines and show fills only' : 'Show pencil lines'}
@@ -1115,9 +1144,10 @@ export default function Home() {
                 <div className="grid grid-cols-[auto_1fr_auto] items-center gap-3">
                   <span className="control-label">STONE {stoneSize} mm</span>
                   <input type="range" min={2} max={14} value={stoneSize} onChange={(e) => setStoneSize(Number(e.target.value))} style={{ accentColor: GOLD, height: 32 }} />
-                  <label className="count-control">× <select aria-label="Stones per dab" value={stoneCount} onChange={(e) => setStoneCount(Number(e.target.value))}>{[1, 2, 3, 5, 8, 12].map((n) => <option key={n}>{n}</option>)}</select></label>
+                  <label className="count-control">TOTAL <select aria-label="Stones per placement" value={stoneCount} onChange={(e) => setStoneCount(Number(e.target.value))}>{[1, 2, 3, 5, 8, 12, 20, 30].map((n) => <option key={n}>{n}</option>)}</select></label>
                 </div>
-                <div className="stone-actions"><div className="stone-counter"><Gem size={13}/> {(surfaceStoneCount||placedStoneCount).toLocaleString()} stones in 3D</div><button disabled={!hasStonePlacement&&surfaceStoneCount===0} onClick={()=>{if(surfaceStoneCount)engineRef.current?.duplicateLastStones();else drawingRef.current?.duplicateLastStones()}}><Copy size={14}/> DUPLICATE LAST</button></div>
+                <div className="stone-placement-note">Tap for a straight, centred row. Drag to place the exact total along your path—every stone is shown before you lift.</div>
+                <div className="stone-actions"><div className="stone-counter"><Gem size={13}/> {(surfaceStoneCount||placedStoneCount).toLocaleString()} stones placed</div><button disabled={!hasStonePlacement&&surfaceStoneCount===0} onClick={()=>{if(surfaceStoneCount)engineRef.current?.duplicateLastStones();else drawingRef.current?.duplicateLastStones()}}><Copy size={14}/> DUPLICATE LAST</button></div>
               </div>
             )}
 
@@ -1135,9 +1165,10 @@ export default function Home() {
                   ))}
                 </div>
                 <div className="shape-size-grid">
-                  <label><span>{shapeKind === 'circle' ? 'DIAMETER' : 'WIDTH'} <b>{shapeWidthCm} cm</b></span><input aria-label="Shape width in centimetres" type="range" min={2} max={60} step={1} value={shapeWidthCm} onChange={(event)=>setShapeWidthCm(Number(event.target.value))}/></label>
-                  {shapeKind === 'rectangle' && <label><span>HEIGHT <b>{shapeHeightCm} cm</b></span><input aria-label="Shape height in centimetres" type="range" min={2} max={60} step={1} value={shapeHeightCm} onChange={(event)=>setShapeHeightCm(Number(event.target.value))}/></label>}
+                  <label><span>{shapeKind === 'circle' ? 'DIAMETER' : 'WIDTH'} <b>{shapeWidthCm} cm</b></span><input aria-label="Shape width in centimetres" type="range" min={2} max={60} step={1} value={shapeWidthCm} onChange={(event)=>{const value=Number(event.target.value);setShapeWidthCm(value);if(selectedDrawingKind==='shape')drawingRef.current?.resizeSelectedShape(value,shapeHeightCm)}}/></label>
+                  {shapeKind === 'rectangle' && <label><span>HEIGHT <b>{shapeHeightCm} cm</b></span><input aria-label="Shape height in centimetres" type="range" min={2} max={60} step={1} value={shapeHeightCm} onChange={(event)=>{const value=Number(event.target.value);setShapeHeightCm(value);if(selectedDrawingKind==='shape')drawingRef.current?.resizeSelectedShape(shapeWidthCm,value)}}/></label>}
                 </div>
+                <div className="tool-subhint">Placed shapes keep a visible gold outline. Adjust these sliders immediately after placement to resize that selected shape.</div>
               </div>
             )}
 
@@ -1257,8 +1288,12 @@ export default function Home() {
         <div className="layers-backdrop absolute inset-0 z-20 flex items-end" onClick={() => setLayersOpen(false)}>
           <div className="studio-sheet layers-sheet w-full rounded-t-3xl p-5" onClick={(e)=>e.stopPropagation()}>
             <div className="sheet-header"><div><div className="sheet-title">2D CANVASES & LAYERS</div><div className="sheet-subtitle">Each editable 2D canvas stays anchored at its own 3D angle</div></div><button aria-label="Close layers" style={iconBtn(false)} onClick={()=>setLayersOpen(false)}><X size={18}/></button></div>
+            <div className="view-layer-section">
+              <div className="canvas-layer-heading"><span>BASE VIEW LAYERS</span><small>Front, Right, Back and Left always remain available</small></div>
+              <div className="view-layer-grid">{(['front','right','back','left'] as DrawingViewId[]).map((view)=><button key={view} data-active={activeView===view&&!activePlaneId.startsWith('angle-')} onClick={()=>switchView(view)}><strong>{view.toUpperCase()}</strong><small>{drawingViews[view].filter((action)=>action.kind!=='fill').length} items</small></button>)}</div>
+            </div>
             <div className="canvas-layer-section">
-              <div className="canvas-layer-heading"><span>2D CANVASES IN 3D SPACE</span><button className="new-canvas-button" onClick={()=>createNewDrawingCanvas()}><Plus size={15}/> NEW 2D CANVAS</button></div>
+              <div className="canvas-layer-heading"><span>ANGLE CANVASES IN 3D SPACE</span><button className="new-canvas-button" onClick={()=>createNewDrawingCanvas()}><Plus size={15}/> NEW ANGLE CANVAS</button></div>
               <div className="canvas-layer-row" data-active="true">
                 <button className="canvas-focus" aria-label="Move camera to active drawing canvas" onClick={()=>previewDrawingPlane(activePlaneId)}><Camera size={17}/></button>
                 <div><input className="canvas-name-input" aria-label="Rename current canvas" value={activePlaneName} onChange={(event)=>{const name=event.target.value;setActivePlaneName(name);scheduleDrawingSave(drawingViews,layers,{activePlaneName:name})}}/><small>{activeView.toUpperCase()} · EDITING</small></div>
@@ -1270,8 +1305,13 @@ export default function Home() {
                 <label><span>DEPTH {plane.depth>0?'+':''}{plane.depth} cm</span><input aria-label={`Canvas ${index+1} depth`} type="range" min={-30} max={40} step={1} value={plane.depth} onFocus={()=>previewDrawingPlane(plane.id)} onPointerDown={()=>previewDrawingPlane(plane.id)} onChange={(event)=>setPlaneDepth(plane.id,Number(event.target.value))}/></label>
               </div>)}
             </div>
+            <div className="content-layer-heading"><span>CONTENT & REFERENCE LAYERS</span><div><button onClick={addDrawingLayer}><Plus size={14}/> DRAWING LAYER</button><button onClick={()=>referenceImageRef.current?.click()}><ImagePlus size={14}/> REFERENCE</button></div></div>
             <div className="layer-list">
-              {[...layers].reverse().map((layer)=><div key={layer.id} className="layer-row" role="button" tabIndex={0} data-active={activeLayerId===layer.id} onKeyDown={(event)=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();setActiveLayerId(layer.id);scheduleDrawingSave(drawingViews,layers,{activeLayerId:layer.id})}}} onClick={()=>{setActiveLayerId(layer.id);scheduleDrawingSave(drawingViews,layers,{activeLayerId:layer.id})}}>
+              {[...layers].reverse().map((layer)=>layer.kind==='reference'?<div key={layer.id} className="reference-layer-card" role="button" tabIndex={0} data-active={activeLayerId===layer.id} onKeyDown={(event)=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();setActiveLayerId(layer.id);setTool('select');setSelectedDrawing(true);setSelectedDrawingKind('reference');scheduleDrawingSave(drawingViews,layers,{activeLayerId:layer.id})}}} onClick={()=>{setActiveLayerId(layer.id);setTool('select');setSelectedDrawing(true);setSelectedDrawingKind('reference');scheduleDrawingSave(drawingViews,layers,{activeLayerId:layer.id})}}>
+                <div className="reference-layer-main"><button aria-label={layer.visible?'Hide reference':'Show reference'} onClick={(event)=>{event.stopPropagation();updateLayers(layers.map((item)=>item.id===layer.id?{...item,visible:!item.visible}:item))}}>{layer.visible?<Eye size={17}/>:<EyeOff size={17}/>}</button><ImagePlus size={18}/><input className="layer-name-input" aria-label={`Rename ${layer.name} reference`} value={layer.name} onClick={(event)=>event.stopPropagation()} onChange={(event)=>updateLayers(layers.map((item)=>item.id===layer.id?{...item,name:event.target.value}:item))}/><small>{(layer.view||'front').toUpperCase()}</small><button aria-label="Delete reference" onClick={(event)=>{event.stopPropagation();const next=layers.filter((item)=>item.id!==layer.id);setActiveLayerId(next.find((item)=>item.kind!=='reference')?.id||'design');updateLayers(next)}}><Trash2 size={16}/></button></div>
+                <div className="reference-adjustments"><label>SIZE {Math.round((layer.scale??.68)*100)}%<input type="range" min={.15} max={1.5} step={.01} value={layer.scale??.68} onClick={(event)=>event.stopPropagation()} onChange={(event)=>updateLayers(layers.map((item)=>item.id===layer.id?{...item,scale:Number(event.target.value)}:item))}/></label><label>OPACITY {Math.round(layer.opacity*100)}%<input type="range" min={.05} max={1} step={.05} value={layer.opacity} onClick={(event)=>event.stopPropagation()} onChange={(event)=>updateLayers(layers.map((item)=>item.id===layer.id?{...item,opacity:Number(event.target.value)}:item))}/></label><label>X {Math.round((layer.x??.5)*100)}%<input type="range" min={0} max={1} step={.01} value={layer.x??.5} onClick={(event)=>event.stopPropagation()} onChange={(event)=>updateLayers(layers.map((item)=>item.id===layer.id?{...item,x:Number(event.target.value)}:item))}/></label><label>Y {Math.round((layer.y??.5)*100)}%<input type="range" min={0} max={1} step={.01} value={layer.y??.5} onClick={(event)=>event.stopPropagation()} onChange={(event)=>updateLayers(layers.map((item)=>item.id===layer.id?{...item,y:Number(event.target.value)}:item))}/></label></div>
+                <div className="reference-help">Select this layer, close Layers, then drag the image directly in the frame. Use the eye to hide it when tracing is complete.</div>
+              </div>:<div key={layer.id} className="layer-row" role="button" tabIndex={0} data-active={activeLayerId===layer.id} onKeyDown={(event)=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();setActiveLayerId(layer.id);scheduleDrawingSave(drawingViews,layers,{activeLayerId:layer.id})}}} onClick={()=>{setActiveLayerId(layer.id);scheduleDrawingSave(drawingViews,layers,{activeLayerId:layer.id})}}>
                 <button aria-label={layer.visible?'Hide layer':'Show layer'} onClick={(e)=>{e.stopPropagation();updateLayers(layers.map((item)=>item.id===layer.id?{...item,visible:!item.visible}:item))}}>{layer.visible?<Eye size={18}/>:<EyeOff size={18}/>}</button>
                 <div className="layer-thumb"><Layers size={17}/></div><input className="layer-name-input" aria-label={`Rename ${layer.name} layer`} value={layer.name} onClick={(event)=>event.stopPropagation()} onChange={(event)=>updateLayers(layers.map((item)=>item.id===layer.id?{...item,name:event.target.value}:item))}/>
                 <input aria-label={`${layer.name} opacity`} type="range" min={.1} max={1} step={.1} value={layer.opacity} onClick={(e)=>e.stopPropagation()} onChange={(e)=>updateLayers(layers.map((item)=>item.id===layer.id?{...item,opacity:Number(e.target.value)}:item))}/>
@@ -1285,9 +1325,9 @@ export default function Home() {
       {componentsOpen && (
         <div className="absolute inset-0 z-20 flex items-end sheet-backdrop" onClick={()=>setComponentsOpen(false)}>
           <div className="studio-sheet w-full rounded-t-3xl p-5" onClick={(e)=>e.stopPropagation()}>
-            <div className="sheet-header"><div><div className="sheet-title">PERFORMANCEWEAR BLOCKS</div><div className="sheet-subtitle">Editable starting shapes for dancewear and lingerie</div></div><button aria-label="Close components" style={iconBtn(false)} onClick={()=>setComponentsOpen(false)}><X size={18}/></button></div>
+            <div className="sheet-header"><div><div className="sheet-title">PERFORMANCEWEAR BLOCKS</div><div className="sheet-subtitle">Anatomically refined, smooth editable outlines · placing on {activeView.toUpperCase()}</div></div><button aria-label="Close components" style={iconBtn(false)} onClick={()=>setComponentsOpen(false)}><X size={18}/></button></div>
             <div className="component-grid">
-              {([['bodice','Bodice'],['corset','Corset'],['cups','Bra cups'],['straps','Straps'],['sleeves','Sleeves'],['gloves','Long gloves'],['brief','Brief'],['stockings','Stockings'],['catsuit','Catsuit'],['skirt','Short skirt'],['longDress','Long dress'],['fringe','Fringe belt'],['feathers','Feather bustle']] as Array<[GarmentTemplate,string]>).map(([id,label])=><button key={id} onClick={()=>addGarmentTemplate(id)}><span className="component-icon"><Scissors size={20}/></span><strong>{label}</strong><small>Add to {layers.find((layer)=>layer.id===activeLayerId)?.name}</small></button>)}
+              {([['bodice','Bodice'],['corset','Corset'],['cups','Bra cups'],['straps','Straps'],['sleeves','Sleeves'],['gloves','Long gloves'],['brief','Brief'],['stockings','Stockings'],['catsuit','Catsuit'],['skirt','Short skirt'],['longDress','Long dress'],['fringe','Fringe belt'],['feathers','Feather bustle']] as Array<[GarmentTemplate,string]>).map(([id,label])=><button key={id} onClick={()=>addGarmentTemplate(id)}><span className="component-icon"><Scissors size={20}/></span><strong>{label}</strong><small>Add to {(layers.find((layer)=>layer.id===activeLayerId)?.kind==='reference'?layers.find((layer)=>layer.kind!=='reference'):layers.find((layer)=>layer.id===activeLayerId))?.name||'Garment'}</small></button>)}
             </div>
           </div>
         </div>
